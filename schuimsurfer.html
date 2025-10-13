@@ -209,6 +209,22 @@
         <div class="control-group">
           <label class="control-label">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <circle cx="12" cy="12" r="6"></circle>
+              <circle cx="12" cy="12" r="2"></circle>
+            </svg>
+            Node Size By
+          </label>
+          <select id="node-size-by">
+            <option value="degree">Degree (connections)</option>
+            <option value="followers">Followers/Usage Count</option>
+            <option value="uniform">Uniform Size</option>
+          </select>
+        </div>
+
+        <div class="control-group">
+          <label class="control-label">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
               <line x1="16" y1="2" x2="16" y2="6"></line>
               <line x1="8" y1="2" x2="8" y2="6"></line>
@@ -408,6 +424,7 @@
     // =========================
     const fileInput = document.getElementById('file-input');
     const networkTypeSelect = document.getElementById('network-type');
+    const nodeSizeBySelect = document.getElementById('node-size-by');
     const engagementFilter = document.getElementById('engagement-filter');
     const engagementValue = document.getElementById('engagement-value');
     const cibThreshold = document.getElementById('cib-threshold');
@@ -1036,8 +1053,26 @@
     }
 
     function nodeSize(n) {
-      const degree = n.degree || 0;
-      return Math.min(5 + Math.sqrt(degree) * 3, 30);
+      const sizeBy = nodeSizeBySelect.value;
+      
+      switch (sizeBy) {
+        case 'degree':
+          const degree = n.degree || 0;
+          return Math.min(5 + Math.sqrt(degree) * 3, 30);
+        
+        case 'followers':
+          if (n.type === 'user') {
+            return Math.min(5 + Math.log((n.followers || 0) + 1) * 1.5, 25);
+          } else {
+            return Math.min(5 + (n.count || 1) * 1.5, 25);
+          }
+        
+        case 'uniform':
+          return 8;
+        
+        default:
+          return 8;
+      }
     }
 
     function drawNetwork() {
@@ -1307,6 +1342,9 @@
     // Controls wiring
     // =========================
     networkTypeSelect.addEventListener('change', updateNetwork);
+    nodeSizeBySelect.addEventListener('change', () => {
+      if (nodes.length > 0) drawNetwork();
+    });
     engagementFilter.addEventListener('input', (e) => {
       const value = e.target.value; engagementValue.textContent = `${value}+ interactions`;
       updateNetwork();
