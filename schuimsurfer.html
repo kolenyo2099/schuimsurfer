@@ -1036,9 +1036,8 @@
     }
 
     function nodeSize(n) {
-      return n.type === 'user'
-        ? Math.min(5 + Math.log((n.followers || 0) + 1) * 1.5, 25)
-        : Math.min(5 + (n.count || 1) * 1.5, 25);
+      const degree = n.degree || 0;
+      return Math.min(5 + Math.sqrt(degree) * 3, 30);
     }
 
     function drawNetwork() {
