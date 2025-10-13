@@ -1,0 +1,1411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Zeeschuimer Network Visualizer Pro</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: #f9fafb;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    .container { display: flex; flex-direction: column; height: 100vh; }
+
+    .header {
+      background: white;
+      border-bottom: 1px solid #e5e7eb;
+      padding: 1rem 1.5rem;
+    }
+
+    .header-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+
+    h1 { font-size: 1.5rem; color: #111827; margin-bottom: 0.25rem; }
+
+    .subtitle { font-size: 0.875rem; color: #6b7280; }
+
+    .upload-btn {
+      display: inline-flex; align-items: center; gap: 0.5rem;
+      padding: 0.625rem 1rem; background: #2563eb; color: white;
+      border: none; border-radius: 0.5rem; cursor: pointer; font-size: 0.875rem; font-weight: 500; transition: background 0.2s;
+    }
+    .upload-btn:hover { background: #1d4ed8; }
+
+    .stats-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 1rem; margin-bottom: 1rem;
+    }
+
+    .stat-card { padding: 0.75rem; border-radius: 0.5rem; }
+    .stat-card.blue { background: #eff6ff; }    .blue .stat-label { color: #2563eb; }    .blue .stat-value { color: #1e3a8a; }
+    .stat-card.purple { background: #f5f3ff; }  .purple .stat-label { color: #7c3aed; }  .purple .stat-value { color: #5b21b6; }
+    .stat-card.green { background: #f0fdf4; }   .green .stat-label { color: #059669; }   .green .stat-value { color: #065f46; }
+    .stat-card.orange { background: #fff7ed; }  .orange .stat-label { color: #ea580c; }  .orange .stat-value { color: #9a3412; }
+    .stat-card.gray { background: #f3f4f6; }    .gray .stat-label { color: #4b5563; }    .gray .stat-value { color: #1f2937; }
+    .stat-card.pink { background: #fdf2f8; }    .pink .stat-label { color: #db2777; }    .pink .stat-value { color: #9f1239; }
+    .stat-card.yellow { background: #fefce8; }  .yellow .stat-label { color: #ca8a04; }  .yellow .stat-value { color: #854d0e; }
+    .stat-card.cyan { background: #ecfeff; }    .cyan .stat-label { color: #0891b2; }    .cyan .stat-value { color: #155e75; }
+    .stat-card.red { background: #fef2f2; }     .red .stat-label { color: #dc2626; }     .red .stat-value { color: #991b1b; }
+
+    .stat-label {
+      font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.25rem;
+    }
+    .stat-value { font-size: 1.5rem; font-weight: 700; }
+
+    .main-content { display: flex; flex: 1; overflow: hidden; }
+    .sidebar { width: 340px; background: white; border-right: 1px solid #e5e7eb; padding: 1.5rem; overflow-y: auto; }
+
+    .control-group { margin-bottom: 1.5rem; }
+    .control-label {
+      display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; font-weight: 600; color: #374151; margin-bottom: 0.5rem;
+    }
+    select, input[type="text"], input[type="date"], input[type="range"], input[type="number"] {
+      width: 100%; padding: 0.5rem 0.75rem; border: 1px solid #d1d5db; border-radius: 0.5rem; font-size: 0.875rem;
+    }
+    select:focus, input:focus { outline: none; border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+
+    .date-range { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+    .date-input-wrapper { display: flex; flex-direction: column; gap: 0.25rem; }
+    .date-label { font-size: 0.75rem; color: #6b7280; }
+    .range-value { font-size: 0.875rem; color: #6b7280; margin-top: 0.25rem; }
+
+    .btn {
+      width: 100%; display: flex; align-items: center; justify-content: center; gap: 0.5rem;
+      padding: 0.625rem 1rem; border: none; border-radius: 0.5rem; font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: background 0.2s;
+    }
+    .btn-export { background: #059669; color: white; } .btn-export:hover:not(:disabled) { background: #047857; }
+    .btn-detect { background: #7c3aed; color: white; margin-bottom: 0.5rem; } .btn-detect:hover:not(:disabled) { background: #6d28d9; }
+    .btn-cib { background: #dc2626; color: white; margin-bottom: 1rem; } .btn-cib:hover:not(:disabled) { background: #b91c1c; }
+    .btn:disabled { background: #d1d5db; cursor: not-allowed; }
+
+    .info-panel { background: #f9fafb; padding: 1rem; border-radius: 0.5rem; border: 1px solid #e5e7eb; }
+    .info-header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 0.75rem; }
+    .info-title { font-weight: 600; color: #111827; }
+    .close-btn { background: none; border: none; cursor: pointer; color: #6b7280; padding: 0; }
+    .info-row { font-size: 0.875rem; margin-bottom: 0.5rem; }
+    .info-label { color: #6b7280; }
+    .info-value { font-weight: 500; }
+
+    .legend { background: #f9fafb; padding: 1rem; border-radius: 0.5rem; border: 1px solid #e5e7eb; }
+    .legend-title { font-weight: 600; color: #111827; margin-bottom: 0.75rem; }
+    .legend-item { display: flex; align-items: center; gap: 0.5rem; font-size: 0.875rem; margin-bottom: 0.5rem; }
+    .legend-dot { width: 1rem; height: 1rem; border-radius: 50%; }
+    .legend-note { font-size: 0.75rem; color: #6b7280; margin-top: 0.75rem; }
+
+    .canvas-container { flex: 1; background: white; position: relative; }
+    #network-canvas { width: 100%; height: 100%; cursor: pointer; }
+    #network-canvas.hovering { cursor: pointer; }
+
+    .empty-state {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center;
+    }
+    .empty-icon { width: 48px; height: 48px; margin: 0 auto 1rem; color: #9ca3af; }
+    .empty-title { font-size: 1.25rem; font-weight: 600; color: #374151; margin-bottom: 0.5rem; }
+    .empty-text { color: #6b7280; }
+
+    .loading {
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,.5);
+      display: none; align-items: center; justify-content: center; z-index: 1000; flex-direction: column;
+    }
+    .loading.active { display: flex; }
+    .spinner { width: 50px; height: 50px; border: 4px solid #f3f4f6; border-top: 4px solid #2563eb; border-radius: 50%;
+      animation: spin 1s linear infinite; margin-bottom: 1rem; }
+    .loading-text { color: white; font-size: 1rem; font-weight: 500; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+    input[type="file"] { display: none; }
+
+    .metrics-list { list-style: none; }
+    .metrics-list li {
+      display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid #e5e7eb; font-size: 0.875rem;
+    }
+    .metrics-list li:last-child { border-bottom: none; }
+    .metric-name { color: #6b7280; }
+    .metric-value { font-weight: 600; color: #111827; }
+
+    .section-divider { height: 1px; background: #e5e7eb; margin: 1.5rem 0; }
+
+    .warning-box { background: #fef2f2; border: 1px solid #fecaca; border-radius: 0.5rem; padding: 0.75rem; margin-top: 0.5rem; }
+    .warning-box p { font-size: 0.75rem; color: #991b1b; line-height: 1.4; }
+    .cib-indicator { display: inline-block; padding: 0.125rem 0.5rem; border-radius: 0.25rem; font-size: 0.75rem; font-weight: 600; color: white; background: #dc2626; }
+    .cib-score { font-weight: 700; color: #dc2626; }
+
+    .small { font-size: 12px; color: #374151; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <div class="header-top">
+        <div>
+          <h1>Zeeschuim Surfer</h1>
+          <div class="subtitle">Basic network analysis and CIB detection</div>
+        </div>
+        <label class="upload-btn">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="17 8 12 3 7 8"></polyline>
+            <line x1="12" y1="3" x2="12" y2="15"></line>
+          </svg>
+          <span>Upload Zeeschuimer data (ndjson)</span>
+          <input type="file" accept=".ndjson,.json" id="file-input">
+        </label>
+      </div>
+
+      <div class="stats-grid" id="stats" style="display: none;">
+        <div class="stat-card blue"><div class="stat-label">Posts</div><div class="stat-value" id="stat-posts">0</div></div>
+        <div class="stat-card purple"><div class="stat-label">Users</div><div class="stat-value" id="stat-users">0</div></div>
+        <div class="stat-card green"><div class="stat-label">Hashtags</div><div class="stat-value" id="stat-hashtags">0</div></div>
+        <div class="stat-card orange"><div class="stat-label">Avg Engagement</div><div class="stat-value" id="stat-engagement">0</div></div>
+        <div class="stat-card gray"><div class="stat-label">Network Nodes</div><div class="stat-value" id="stat-nodes">0</div></div>
+        <div class="stat-card pink"><div class="stat-label">Network Edges</div><div class="stat-value" id="stat-edges">0</div></div>
+        <div class="stat-card yellow"><div class="stat-label">Density</div><div class="stat-value" id="stat-density">0</div></div>
+        <div class="stat-card cyan"><div class="stat-label">Communities</div><div class="stat-value" id="stat-communities">0</div></div>
+        <div class="stat-card red"><div class="stat-label">Suspicious Accounts</div><div class="stat-value" id="stat-suspicious">0</div></div>
+      </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main-content">
+      <!-- Sidebar -->
+      <div class="sidebar">
+        <!-- Education panel -->
+        <div class="info-panel" id="edu-panel" style="margin-bottom:1.5rem;">
+          <div class="info-title" style="margin-bottom:.5rem;">Some useful info:</div>
+          <div id="edu-basics" class="small">
+            <p><b>Nodes</b> are users or hashtags; <b>edges</b> connect them (mentions, co-hashtags, etc.).</p>
+            <p><b>Degree</b> = how many neighbors a node has. Hubs can shape attention; high-degree hashtags often mark narratives.</p>
+            <p><b>Clustering</b> ≈ how connected a node's neighbors are. High clustering hints at tight echo chambers.</p>
+            <p><b>Communities</b> are groups more connected inside than outside — useful to find sub-audiences or coordinated clusters.</p>
+          </div>
+          <div class="section-divider" style="margin:.75rem 0;"></div>
+          <div id="edu-coach" class="small">
+            <p><b>How to:</b> load data, pick a network type, then <i>hover</i> nodes for quick stats or <i>click</i> for deep-dive & example posts.</p>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <label class="control-label">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M12 1v6m0 6v6"></path>
+              <path d="M17 12h6M1 12h6"></path>
+            </svg>
+            Network Type
+          </label>
+          <select id="network-type">
+            <option value="mention">User Mentions Network</option>
+            <option value="coHashtag">Hashtag Co-occurrence</option>
+            <option value="userHashtag">User-Hashtag Network</option>
+            <option value="hashtag">Hashtag Usage</option>
+          </select>
+        </div>
+
+        <div class="control-group">
+          <label class="control-label">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+              <circle cx="12" cy="10" r="3"></circle>
+            </svg>
+            Layout Algorithm
+          </label>
+          <select id="layout-type">
+            <option value="force">Force-Directed</option>
+            <option value="circular">Circular</option>
+            <option value="radial">Radial</option>
+            <option value="grid">Grid</option>
+          </select>
+        </div>
+
+        <div class="control-group">
+          <label class="control-label">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+              <line x1="16" y1="2" x2="16" y2="6"></line>
+              <line x1="8" y1="2" x2="8" y2="6"></line>
+              <line x1="3" y1="10" x2="21" y2="10"></line>
+            </svg>
+            Time Range Filter
+          </label>
+          <div class="date-range">
+            <div class="date-input-wrapper">
+              <label class="date-label">From</label>
+              <input type="date" id="date-start">
+            </div>
+            <div class="date-input-wrapper">
+              <label class="date-label">To</label>
+              <input type="date" id="date-end">
+            </div>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <label class="control-label">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
+            </svg>
+            Minimum Engagement
+          </label>
+          <input type="range" id="engagement-filter" min="0" max="10000" step="100" value="0">
+          <div class="range-value" id="engagement-value">0+ interactions</div>
+        </div>
+
+        <div class="control-group">
+          <label class="control-label">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            </svg>
+            CIB Detection Sensitivity
+          </label>
+          <input type="range" id="cib-threshold" min="1" max="10" step="1" value="5">
+          <div class="range-value" id="threshold-value">Medium (5)</div>
+        </div>
+
+        <div class="control-group">
+          <label class="control-label">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <polyline points="12 6 12 12 16 14"></polyline>
+            </svg>
+            Synchronized Posting Time Window
+          </label>
+          <input type="range" id="time-window" min="60" max="1800" step="60" value="300">
+          <div class="range-value" id="time-window-value">5 minutes</div>
+        </div>
+
+        <div class="control-group">
+          <label class="control-label">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"></circle>
+              <path d="m21 21-4.35-4.35"></path>
+            </svg>
+            Search
+          </label>
+          <input type="text" id="search-input" placeholder="Search nodes...">
+        </div>
+
+        <div class="control-group">
+          <button class="btn btn-cib" id="cib-btn" disabled>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            </svg>
+            Detect Coordinated Behavior
+          </button>
+          <button class="btn btn-detect" id="detect-btn" disabled>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M12 1v6m0 6v6"></path>
+              <path d="M17 12h6M1 12h6"></path>
+            </svg>
+            Detect Communities
+          </button>
+          <button class="btn btn-export" id="export-btn" disabled>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            Export Network Data
+          </button>
+        </div>
+
+        <div class="section-divider"></div>
+
+        <!-- CIB Detection Results -->
+        <div class="info-panel" id="cib-panel" style="display: none;">
+          <div class="info-title" style="margin-bottom: 0.75rem;">CIB Detection Results</div>
+          <div id="cib-results"></div>
+          <div class="warning-box">
+            <p><strong>Note:</strong> These are indicators, not proof. Legitimate activism and organic coordination may trigger signals. Always verify with manual inspection.</p>
+          </div>
+        </div>
+
+        <!-- Network Metrics -->
+        <div class="info-panel" id="metrics-panel" style="display: none;">
+          <div class="info-title" style="margin-bottom: 0.75rem;">Network Metrics</div>
+          <ul class="metrics-list" id="metrics-list"></ul>
+        </div>
+
+        <!-- Selected Node Info (sidebar) -->
+        <div class="info-panel" id="node-info" style="display: none; margin-top: 1rem;">
+          <div class="info-header">
+            <div class="info-title">Node Details</div>
+            <button class="close-btn" id="close-info">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+          </div>
+          <div id="node-details"></div>
+        </div>
+
+        <!-- Legend -->
+        <div class="legend" style="margin-top: 1rem;">
+          <div class="legend-title">Legend</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#dc2626;"></div><span>Suspicious/CIB Account</span></div>
+          <div class="legend-item"><div class="legend-dot blue" style="background:#3b82f6;"></div><span>Verified User</span></div>
+          <div class="legend-item"><div class="legend-dot purple" style="background:#8b5cf6;"></div><span>Regular User</span></div>
+          <div class="legend-item"><div class="legend-dot green" style="background:#10b981;"></div><span>Hashtag</span></div>
+          <div class="legend-note">Red nodes indicate accounts flagged as potentially coordinated based on behavioral indicators.</div>
+        </div>
+
+      </div>
+
+      <!-- Canvas area -->
+      <div class="canvas-container">
+        <canvas id="network-canvas"></canvas>
+
+        <!-- Hover tooltip (simple) -->
+        <div id="node-tooltip" style="
+          position:absolute; pointer-events:none; display:none;
+          background:#111827; color:#fff; padding:.4rem .6rem; border-radius:.375rem;
+          font-size:12px; box-shadow:0 6px 20px rgba(0,0,0,.2); z-index:2;">
+        </div>
+
+        <!-- Click modal (rich) -->
+        <div id="node-modal" style="
+          position:fixed; inset:0; background:rgba(0,0,0,.5); display:none;
+          align-items:center; justify-content:center; z-index:2000;">
+          <div style="width:min(780px,92vw); max-height:80vh; overflow:auto; background:#fff; border-radius:12px;
+                      box-shadow:0 20px 60px rgba(0,0,0,.35);">
+            <div style="padding:16px 18px; border-bottom:1px solid #eee; display:flex; align-items:center; justify-content:space-between;">
+              <div id="modal-title" style="font-weight:700; font-size:16px;">Node</div>
+              <button id="modal-close" style="border:none; background:#f3f4f6; padding:.4rem .6rem; border-radius:8px; cursor:pointer;">Close</button>
+            </div>
+            <div id="modal-body" style="padding:16px 18px; font-size:14px;"></div>
+          </div>
+        </div>
+
+        <div class="empty-state" id="empty-state">
+          <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="17 8 12 3 7 8"></polyline>
+            <line x1="12" y1="3" x2="12" y2="15"></line>
+          </svg>
+          <div class="empty-title">No Data Loaded</div>
+          <div class="empty-text">Upload a Zeeschuimer NDJSON file to get started</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading Overlay -->
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    <div class="loading-text" id="loading-text">Processing...</div>
+  </div>
+
+  <script>
+    // =========================
+    // Global state
+    // =========================
+    let rawData = [];
+    let filteredData = [];
+    let graphData = null;
+    let nodes = [];
+    let communities = null;
+    let cibDetection = null;
+    let animationFrame = null;
+    let networkMetrics = null;
+
+    // Hover & modal helpers / indexes
+    let idToNode = new Map();     // node.id -> node (with x,y)
+    let adjacency = new Map();    // node.id -> Set(neighborIds)
+    let hoveredNode = null;
+
+    // =========================
+    // DOM elements
+    // =========================
+    const fileInput = document.getElementById('file-input');
+    const networkTypeSelect = document.getElementById('network-type');
+    const layoutTypeSelect = document.getElementById('layout-type');
+    const engagementFilter = document.getElementById('engagement-filter');
+    const engagementValue = document.getElementById('engagement-value');
+    const cibThreshold = document.getElementById('cib-threshold');
+    const thresholdValue = document.getElementById('threshold-value');
+    const timeWindowInput = document.getElementById('time-window');
+    const timeWindowValue = document.getElementById('time-window-value');
+    const dateStart = document.getElementById('date-start');
+    const dateEnd = document.getElementById('date-end');
+    const searchInput = document.getElementById('search-input');
+    const exportBtn = document.getElementById('export-btn');
+    const detectBtn = document.getElementById('detect-btn');
+    const cibBtn = document.getElementById('cib-btn');
+    const canvas = document.getElementById('network-canvas');
+    const ctx = canvas.getContext('2d');
+    const emptyState = document.getElementById('empty-state');
+    const statsDiv = document.getElementById('stats');
+    const nodeInfo = document.getElementById('node-info');
+    const nodeDetails = document.getElementById('node-details');
+    const closeInfo = document.getElementById('close-info');
+    const loading = document.getElementById('loading');
+    const loadingText = document.getElementById('loading-text');
+    const metricsPanel = document.getElementById('metrics-panel');
+    const metricsList = document.getElementById('metrics-list');
+    const cibPanel = document.getElementById('cib-panel');
+    const cibResults = document.getElementById('cib-results');
+    const tooltipEl = document.getElementById('node-tooltip');
+    const modalEl   = document.getElementById('node-modal');
+    const modalClose= document.getElementById('modal-close');
+    const modalTitle= document.getElementById('modal-title');
+    const modalBody = document.getElementById('modal-body');
+
+    // =========================
+    // UI constants
+    // =========================
+    const communityColors = ['#ef4444','#f59e0b','#10b981','#3b82f6','#8b5cf6','#ec4899','#14b8a6','#f97316','#06b6d4','#84cc16'];
+    const thresholdLabels = {
+      1:'Very Low (1)',2:'Low (2)',3:'Low-Med (3)',4:'Medium-Low (4)',5:'Medium (5)',
+      6:'Medium-High (6)',7:'High-Med (7)',8:'High (8)',9:'Very High (9)',10:'Maximum (10)'
+    };
+
+    cibThreshold.addEventListener('input', (e)=>{ thresholdValue.textContent = thresholdLabels[e.target.value]; });
+
+    timeWindowInput.addEventListener('input', (e) => {
+      const minutes = Math.floor(e.target.value / 60);
+      timeWindowValue.textContent = `${minutes} minute${minutes !== 1 ? 's' : ''}`;
+    });
+
+    // =========================
+    // File upload
+    // =========================
+    fileInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      loading.classList.add('active');
+      loadingText.textContent = 'Loading data...';
+
+      try {
+        const text = await file.text();
+        const lines = text.trim().split('\n');
+        rawData = lines.map(line => JSON.parse(line));
+
+        // set date bounds from data (TikTok createTime seconds)
+        const dates = rawData.map(p => p.data?.createTime).filter(Boolean);
+        if (dates.length > 0) {
+          const minDate = new Date(Math.min(...dates) * 1000);
+          const maxDate = new Date(Math.max(...dates) * 1000);
+          dateStart.value = minDate.toISOString().split('T')[0];
+          dateEnd.value = maxDate.toISOString().split('T')[0];
+        }
+
+        calculateStats();
+        updateNetwork();
+        emptyState.style.display = 'none';
+        statsDiv.style.display = 'grid';
+        exportBtn.disabled = false;
+        detectBtn.disabled = false;
+        cibBtn.disabled = false;
+      } catch (err) {
+        alert('Error parsing file: ' + err.message);
+      } finally {
+        loading.classList.remove('active');
+      }
+    });
+
+    // =========================
+    // Stats
+    // =========================
+    function calculateStats() {
+      const uniqueUsers = new Set(rawData.map(p => p.data?.author?.id).filter(Boolean));
+      const allHashtags = rawData.flatMap(p => p.data?.challenges?.map(c => c.title) || []);
+      const uniqueHashtags = new Set(allHashtags);
+
+      const totalEngagement = rawData.reduce((sum, p) => {
+        return sum + (p.data?.stats?.diggCount || 0) + (p.data?.stats?.commentCount || 0);
+      }, 0);
+
+      document.getElementById('stat-posts').textContent = rawData.length;
+      document.getElementById('stat-users').textContent = uniqueUsers.size;
+      document.getElementById('stat-hashtags').textContent = uniqueHashtags.size;
+      document.getElementById('stat-engagement').textContent = rawData.length ? Math.round(totalEngagement / rawData.length) : 0;
+    }
+
+    // =========================
+    // Filters (engagement + date)
+    // =========================
+    function filterData() {
+      const minEngagement = parseInt(engagementFilter.value, 10);
+      const startDate = dateStart.value ? new Date(dateStart.value).getTime() / 1000 : 0;
+      const endDate = dateEnd.value ? new Date(dateEnd.value).getTime() / 1000 : Infinity;
+
+      filteredData = rawData.filter(post => {
+        const engagement = (post.data?.stats?.diggCount || 0) + (post.data?.stats?.commentCount || 0) + (post.data?.stats?.shareCount || 0);
+        const postTime = post.data?.createTime || 0;
+        return engagement >= minEngagement && postTime >= startDate && postTime <= endDate;
+      });
+
+      return filteredData;
+    }
+
+    // =========================
+    // CIB detection (heuristics)
+    // =========================
+    function detectCIB() {
+      loading.classList.add('active');
+      loadingText.textContent = 'Analyzing coordinated behavior patterns...';
+
+      setTimeout(() => {
+        const threshold = parseInt(cibThreshold.value, 10);
+        const sensitivity = 11 - threshold; // higher threshold = stricter
+
+        const results = { suspiciousUsers: new Set(), indicators: {} };
+
+        // 1) Synchronized posting
+        const postsByUser = new Map();
+        filteredData.forEach(post => {
+          const userId = post.data?.author?.id;
+          const timestamp = post.data?.createTime;
+          if (!userId || !timestamp) return;
+          if (!postsByUser.has(userId)) postsByUser.set(userId, []);
+          postsByUser.get(userId).push({ timestamp, post });
+        });
+        const timeWindow = parseInt(timeWindowInput.value, 10);
+        const synchGroups = [];
+        const userTs = Array.from(postsByUser.entries());
+        for (let i=0;i<userTs.length;i++){
+          for (let j=i+1;j<userTs.length;j++){
+            const [u1, p1] = userTs[i]; const [u2, p2] = userTs[j];
+            let syncCount = 0;
+            p1.forEach(a => p2.forEach(b => { if (Math.abs(a.timestamp - b.timestamp) < timeWindow) syncCount++; }));
+            if (syncCount >= Math.max(2, Math.floor(10/sensitivity))) {
+              results.suspiciousUsers.add(u1); results.suspiciousUsers.add(u2); synchGroups.push({ u1, u2, syncCount });
+            }
+          }
+        }
+        results.indicators.synchronized = synchGroups.length;
+
+        // 2) Identical hashtag sequences
+        const hashtagSequences = new Map();
+        filteredData.forEach(post => {
+          const userId = post.data?.author?.id;
+          const hashtags = post.data?.challenges?.map(c => c.title).join(',') || '';
+          if (!userId || !hashtags) return;
+          const key = hashtags;
+          if (!hashtagSequences.has(key)) hashtagSequences.set(key, new Set());
+          hashtagSequences.get(key).add(userId);
+        });
+        let identicalHashtagUsers = 0;
+        hashtagSequences.forEach(users => {
+          if (users.size >= Math.max(3, Math.floor(15/sensitivity))) {
+            users.forEach(u => results.suspiciousUsers.add(u));
+            identicalHashtagUsers += users.size;
+          }
+        });
+        results.indicators.identicalHashtags = identicalHashtagUsers;
+
+        // 3) Similar username prefixes
+        const usernames = new Map();
+        filteredData.forEach(post => {
+          const author = post.data?.author; if (!author) return;
+          const username = author.uniqueId || author.nickname || '';
+          const userId = author.id;
+          const prefix = username.substring(0, Math.min(7, username.length));
+          if (prefix.length < 4) return;
+          if (!usernames.has(prefix)) usernames.set(prefix, new Set());
+          usernames.get(prefix).add(userId);
+        });
+        let similarUsernameCount = 0;
+        usernames.forEach(users => {
+          if (users.size >= Math.max(3, Math.floor(12/sensitivity))) {
+            users.forEach(u => results.suspiciousUsers.add(u));
+            similarUsernameCount += users.size;
+          }
+        });
+        results.indicators.similarUsernames = similarUsernameCount;
+
+        // 4) High-volume posting
+        const minPosts = Math.max(5, Math.floor(25/sensitivity));
+        results.indicators.highVolume = 0;
+        postsByUser.forEach((posts, userId) => {
+          if (posts.length >= minPosts) {
+            const ts = posts.map(p => p.timestamp).sort();
+            const span = ts[ts.length-1] - ts[0];
+            const postsPerDay = span>0 ? (posts.length / (span / 86400)) : posts.length;
+            if (postsPerDay > Math.max(10, 50/sensitivity)) results.suspiciousUsers.add(userId);
+            results.indicators.highVolume++;
+          }
+        });
+
+        // 5) Duplicate captions
+        const captions = new Map();
+        filteredData.forEach(post => {
+          const userId = post.data?.author?.id;
+          const caption = post.data?.desc || '';
+          if (!userId || caption.length < 10) return;
+          const normalized = caption.toLowerCase().replace(/[^\w\s]/g,'').trim();
+          if (!captions.has(normalized)) captions.set(normalized, new Set());
+          captions.get(normalized).add(userId);
+        });
+        let duplicateCaptionUsers = 0;
+        captions.forEach(users => {
+          if (users.size >= Math.max(2, Math.floor(8/sensitivity))) {
+            users.forEach(u => results.suspiciousUsers.add(u));
+            duplicateCaptionUsers += users.size;
+          }
+        });
+        results.indicators.duplicateCaptions = duplicateCaptionUsers;
+
+        // risk scores
+        results.userScores = new Map();
+        results.suspiciousUsers.forEach(userId => {
+          let score = 0;
+          if (synchGroups.some(g => g.u1===userId || g.u2===userId)) score += 25;
+          const userPosts = filteredData.filter(p => p.data?.author?.id === userId);
+          const userHashtags = userPosts.map(p => p.data?.challenges?.map(c => c.title).join(',') || '');
+          if (userHashtags.some(h => userHashtags.filter(x => x===h).length >= 2)) score += 20;
+          if (userPosts.length >= minPosts) score += 15;
+          const userCaptions = userPosts.map(p => (p.data?.desc || '').toLowerCase().replace(/[^\w\s]/g,'').trim());
+          if (userCaptions.some(c => userCaptions.filter(x => x===c).length >= 2)) score += 20;
+          results.userScores.set(userId, score);
+        });
+
+        cibDetection = results;
+        displayCIBResults(results);
+
+        // mark nodes
+        if (nodes.length > 0) {
+          nodes.forEach(node => {
+            const plainId = node.id.replace(/^u_/,'');
+            if (results.suspiciousUsers.has(node.id) || results.suspiciousUsers.has(plainId)) {
+              node.suspicious = true;
+              node.cibScore = results.userScores.get(node.id) || results.userScores.get(plainId) || 0;
+            }
+          });
+          drawNetwork();
+        }
+        document.getElementById('stat-suspicious').textContent = results.suspiciousUsers.size;
+
+        loading.classList.remove('active');
+        updateCoach();
+      }, 100);
+    }
+
+    function displayCIBResults(results) {
+      let html = '<ul class="metrics-list">';
+      html += `<li><span class="metric-name">Suspicious Accounts</span><span class="metric-value cib-score">${results.suspiciousUsers.size}</span></li>`;
+      html += `<li><span class="metric-name">Synchronized Posting</span><span class="metric-value">${results.indicators.synchronized} pairs</span></li>`;
+      html += `<li><span class="metric-name">Identical Hashtags</span><span class="metric-value">${results.indicators.identicalHashtags} users</span></li>`;
+      html += `<li><span class="metric-name">Similar Usernames</span><span class="metric-value">${results.indicators.similarUsernames} users</span></li>`;
+      html += `<li><span class="metric-name">High Volume Posting</span><span class="metric-value">${results.indicators.highVolume} users</span></li>`;
+      html += `<li><span class="metric-name">Duplicate Captions</span><span class="metric-value">${results.indicators.duplicateCaptions} users</span></li>`;
+      html += '</ul>';
+      cibResults.innerHTML = html;
+      cibPanel.style.display = 'block';
+    }
+
+    // =========================
+    // Network extraction
+    // =========================
+    function extractMentionNetwork(posts) {
+      const nodeMap = new Map();
+      const links = [];
+
+      posts.forEach(post => {
+        const author = post.data?.author;
+        if (!author) return;
+
+        const authorId = author.id;
+        if (!nodeMap.has(authorId)) {
+          nodeMap.set(authorId, {
+            id: authorId,
+            label: author.uniqueId || author.nickname,
+            verified: author.verified,
+            followers: post.data?.authorStats?.followerCount || 0,
+            type: 'user'
+          });
+        }
+        const mentions = post.data?.textExtra?.filter(t => t.type === 0) || [];
+        mentions.forEach(mention => {
+          if (!nodeMap.has(mention.userId)) {
+            nodeMap.set(mention.userId, {
+              id: mention.userId,
+              label: mention.userUniqueId || String(mention.userId),
+              type: 'user', followers: 0
+            });
+          }
+          links.push({ source: authorId, target: mention.userId, postId: post.item_id });
+        });
+      });
+
+      return { nodes: Array.from(nodeMap.values()), links };
+    }
+
+    function extractCoHashtagNetwork(posts) {
+      const nodeMap = new Map();
+      const linkMap = new Map();
+
+      posts.forEach(post => {
+        const hashtags = post.data?.challenges || [];
+        hashtags.forEach(tag => {
+          const tagId = tag.id;
+          if (!nodeMap.has(tagId)) nodeMap.set(tagId, { id: tagId, label: tag.title, count: 0, type: 'hashtag' });
+          nodeMap.get(tagId).count++;
+        });
+        for (let i=0;i<hashtags.length;i++){
+          for (let j=i+1;j<hashtags.length;j++){
+            const source = hashtags[i].id, target = hashtags[j].id;
+            const key = [source, target].sort().join('-');
+            if (!linkMap.has(key)) linkMap.set(key, { source, target, weight: 0 });
+            linkMap.get(key).weight++;
+          }
+        }
+      });
+      return { nodes: Array.from(nodeMap.values()), links: Array.from(linkMap.values()) };
+    }
+
+    function extractUserHashtagNetwork(posts) {
+      const nodeMap = new Map();
+      const links = [];
+
+      posts.forEach(post => {
+        const author = post.data?.author;
+        if (!author) return;
+
+        const authorId = `u_${author.id}`;
+        if (!nodeMap.has(authorId)) {
+          nodeMap.set(authorId, {
+            id: authorId, label: author.uniqueId || author.nickname, type: 'user',
+            verified: author.verified, followers: post.data?.authorStats?.followerCount || 0
+          });
+        }
+        const hashtags = post.data?.challenges || [];
+        hashtags.forEach(tag => {
+          const tagId = `h_${tag.id}`;
+          if (!nodeMap.has(tagId)) nodeMap.set(tagId, { id: tagId, label: tag.title, type: 'hashtag', count: 0 });
+          nodeMap.get(tagId).count++;
+          links.push({ source: authorId, target: tagId, postId: post.item_id });
+        });
+      });
+
+      return { nodes: Array.from(nodeMap.values()), links };
+    }
+
+    function extractHashtagNetwork(posts) {
+      const nodeMap = new Map();
+      posts.forEach(post => {
+        const hashtags = post.data?.challenges || [];
+        hashtags.forEach(tag => {
+          if (!nodeMap.has(tag.id)) nodeMap.set(tag.id, { id: tag.id, label: tag.title, count: 0, totalEngagement: 0, type: 'hashtag' });
+          const node = nodeMap.get(tag.id);
+          node.count++;
+          node.totalEngagement += (post.data?.stats?.diggCount || 0);
+        });
+      });
+      return { nodes: Array.from(nodeMap.values()), links: [] };
+    }
+
+    // =========================
+    // Metrics & communities
+    // =========================
+    function calculateNetworkMetrics(graph) {
+      const n = graph.nodes.length;
+      const m = graph.links.length;
+      if (n === 0) return null;
+
+      const maxEdges = (n * (n - 1)) / 2;
+      const density = maxEdges > 0 ? (m / maxEdges).toFixed(3) : 0;
+
+      const degrees = new Map();
+      graph.nodes.forEach(node => degrees.set(node.id, 0));
+      graph.links.forEach(link => {
+        degrees.set(link.source, (degrees.get(link.source) || 0) + 1);
+        degrees.set(link.target, (degrees.get(link.target) || 0) + 1);
+      });
+
+      const avgDegree = (Array.from(degrees.values()).reduce((a,b)=>a+b,0) / n).toFixed(2);
+      const maxDegree = degrees.size ? Math.max(...Array.from(degrees.values())) : 0;
+
+      graph.nodes.forEach(node => { node.degree = degrees.get(node.id) || 0; });
+
+      let totalClustering = 0, validNodes = 0;
+      graph.nodes.forEach(node => {
+        const neighbors = new Set();
+        graph.links.forEach(link => {
+          if (link.source === node.id) neighbors.add(link.target);
+          if (link.target === node.id) neighbors.add(link.source);
+        });
+        const k = neighbors.size;
+        if (k < 2) return;
+        let triangles = 0;
+        const arr = Array.from(neighbors);
+        for (let i=0;i<arr.length;i++){
+          for (let j=i+1;j<arr.length;j++){
+            if (graph.links.some(l => (l.source===arr[i] && l.target===arr[j]) || (l.target===arr[i] && l.source===arr[j]))) triangles++;
+          }
+        }
+        const possible = (k*(k-1))/2;
+        if (possible > 0) { totalClustering += triangles/possible; validNodes++; }
+      });
+      const avgClustering = validNodes > 0 ? (totalClustering / validNodes).toFixed(3) : 0;
+
+      return { nodes: n, edges: m, density, avgDegree, maxDegree, avgClustering };
+    }
+
+    function displayMetrics(metrics) {
+      if (!metrics) { metricsPanel.style.display = 'none'; return; }
+      metricsList.innerHTML = `
+        <li><span class="metric-name">Nodes</span><span class="metric-value">${metrics.nodes}</span></li>
+        <li><span class="metric-name">Edges</span><span class="metric-value">${metrics.edges}</span></li>
+        <li><span class="metric-name">Density</span><span class="metric-value">${metrics.density}</span></li>
+        <li><span class="metric-name">Avg Degree</span><span class="metric-value">${metrics.avgDegree}</span></li>
+        <li><span class="metric-name">Max Degree</span><span class="metric-value">${metrics.maxDegree}</span></li>
+        <li><span class="metric-name">Clustering</span><span class="metric-value">${metrics.avgClustering}</span></li>
+      `;
+      metricsPanel.style.display = 'block';
+    }
+
+    function detectCommunities(graph) {
+      if (graph.nodes.length === 0 || graph.links.length === 0) return null;
+
+      const adj = new Map();
+      graph.nodes.forEach(n => adj.set(n.id, new Set()));
+      graph.links.forEach(l => { adj.get(l.source).add(l.target); adj.get(l.target).add(l.source); });
+
+      const labels = new Map();
+      graph.nodes.forEach((n,i)=>labels.set(n.id, i));
+
+      let changed = true, iterations = 0;
+      const maxIterations = 100;
+
+      while (changed && iterations < maxIterations) {
+        changed = false; iterations++;
+        const shuffled = [...graph.nodes].sort(() => Math.random()-0.5);
+        shuffled.forEach(node => {
+          const neighbors = adj.get(node.id); if (neighbors.size===0) return;
+          const counts = new Map();
+          neighbors.forEach(nb => { const lab = labels.get(nb); counts.set(lab, (counts.get(lab)||0)+1); });
+          let best = labels.get(node.id), bestCount = 0;
+          counts.forEach((c,lab)=>{ if (c>bestCount){ bestCount=c; best=lab; } });
+          if (best !== labels.get(node.id)) { labels.set(node.id, best); changed = true; }
+        });
+      }
+      const uniq = [...new Set(labels.values())];
+      const remap = new Map(); uniq.forEach((lab,i)=>remap.set(lab,i));
+      const out = new Map(); labels.forEach((lab,id)=>out.set(id, remap.get(lab)));
+      return { communities: out, count: uniq.length };
+    }
+
+    // =========================
+    // Update network
+    // =========================
+    function updateNetwork() {
+      loading.classList.add('active');
+      loadingText.textContent = 'Building network...';
+
+      setTimeout(() => {
+        const filtered = filterData();
+        const networkType = networkTypeSelect.value;
+
+        let network;
+        switch (networkType) {
+          case 'mention':     network = extractMentionNetwork(filtered);     break;
+          case 'coHashtag':   network = extractCoHashtagNetwork(filtered);   break;
+          case 'userHashtag': network = extractUserHashtagNetwork(filtered); break;
+          case 'hashtag':     network = extractHashtagNetwork(filtered);     break;
+          default:            network = { nodes: [], links: [] };
+        }
+
+        graphData = network;
+        communities = null;
+        cibDetection = null;
+
+        networkMetrics = calculateNetworkMetrics(network);
+        displayMetrics(networkMetrics);
+
+        document.getElementById('stat-nodes').textContent = network.nodes.length;
+        document.getElementById('stat-edges').textContent = network.links.length;
+        document.getElementById('stat-density').textContent = networkMetrics ? networkMetrics.density : '0';
+        document.getElementById('stat-communities').textContent = '0';
+        document.getElementById('stat-suspicious').textContent = '0';
+
+        cibPanel.style.display = 'none';
+
+        // Build adjacency (for degree/hover-neighbor glow) and an id->node map
+        buildAdjacency(graphData);
+        idToNode = new Map(graphData.nodes.map(n => [n.id, n]));
+
+        initializeVisualization();
+        loading.classList.remove('active');
+        updateCoach();
+      }, 100);
+    }
+
+    // =========================
+    // Layouts & drawing
+    // =========================
+    function applyForceLayout() {
+      const centerX = canvas.width / 2, centerY = canvas.height / 2;
+      nodes.forEach(node => {
+        nodes.forEach(other => {
+          if (node === other) return;
+          const dx = node.x - other.x, dy = node.y - other.y;
+          const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+          const force = Math.min(1000 / (dist*dist), 10);
+          node.vx += (dx / dist) * force;
+          node.vy += (dy / dist) * force;
+        });
+        graphData.links.forEach(link => {
+          const source = nodes.find(n => n.id === link.source);
+          const target = nodes.find(n => n.id === link.target);
+          if (!source || !target) return;
+          if (node === source) {
+            const dx = target.x - source.x, dy = target.y - source.y;
+            const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+            const force = (dist - 150) * 0.05;
+            node.vx += (dx / dist) * force;
+            node.vy += (dy / dist) * force;
+          }
+        });
+        node.vx += (centerX - node.x) * 0.002;
+        node.vy += (centerY - node.y) * 0.002;
+        node.vx *= 0.85; node.vy *= 0.85;
+        node.x += node.vx; node.y += node.vy;
+        const margin = 30;
+        node.x = Math.max(margin, Math.min(canvas.width - margin, node.x));
+        node.y = Math.max(margin, Math.min(canvas.height - margin, node.y));
+      });
+    }
+
+    function applyCircularLayout() {
+      const centerX = canvas.width / 2, centerY = canvas.height / 2;
+      const radius = Math.min(canvas.width, canvas.height) * 0.35;
+      nodes.forEach((node, i) => {
+        const angle = (i / nodes.length) * 2 * Math.PI;
+        node.x = centerX + radius * Math.cos(angle);
+        node.y = centerY + radius * Math.sin(angle);
+        node.vx = 0; node.vy = 0;
+      });
+    }
+
+    function applyRadialLayout() {
+      const centerX = canvas.width / 2, centerY = canvas.height / 2;
+      const sorted = [...nodes].sort((a,b)=> (b.degree||0) - (a.degree||0));
+      sorted.forEach((node, i) => {
+        const layer = Math.floor(Math.sqrt(i));
+        const radius = 50 + layer * 80;
+        const nodesInLayer = Math.max(6, Math.floor(2 * Math.PI * radius / 40));
+        const angle = (i % nodesInLayer) * (2 * Math.PI / nodesInLayer);
+        node.x = centerX + radius * Math.cos(angle);
+        node.y = centerY + radius * Math.sin(angle);
+        node.vx = 0; node.vy = 0;
+      });
+    }
+
+    function applyGridLayout() {
+      const cols = Math.ceil(Math.sqrt(nodes.length));
+      const cellWidth = canvas.width / (cols + 1);
+      const rows = Math.ceil(nodes.length / cols);
+      const cellHeight = canvas.height / (rows + 1);
+      nodes.forEach((node, i) => {
+        const row = Math.floor(i / cols), col = i % cols;
+        node.x = cellWidth * (col + 1);
+        node.y = cellHeight * (row + 1);
+        node.vx = 0; node.vy = 0;
+      });
+    }
+
+    function initializeVisualization() {
+      if (!graphData || graphData.nodes.length === 0) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        return;
+      }
+      canvas.width = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+
+      nodes = graphData.nodes.map(n => ({
+        ...n,
+        x: canvas.width/2 + (Math.random()-0.5)*100,
+        y: canvas.height/2 + (Math.random()-0.5)*100,
+        vx: 0, vy: 0
+      }));
+
+      const layout = layoutTypeSelect.value;
+      if (layout !== 'force') { applyLayout(layout); drawNetwork(); }
+      else { startAnimation(); }
+    }
+
+    function applyLayout(type) {
+      switch (type) {
+        case 'circular': applyCircularLayout(); break;
+        case 'radial':   applyRadialLayout();   break;
+        case 'grid':     applyGridLayout();     break;
+      }
+    }
+
+    function startAnimation() {
+      if (animationFrame) cancelAnimationFrame(animationFrame);
+      let iteration = 0, maxIterations = 200;
+      function animate() {
+        if (iteration++ > maxIterations) return;
+        applyForceLayout(); drawNetwork();
+        animationFrame = requestAnimationFrame(animate);
+      }
+      animate();
+    }
+
+    function getNodeColor(node) {
+      if (node.suspicious) return '#dc2626';
+      if (communities && communities.communities.has(node.id)) {
+        const cid = communities.communities.get(node.id);
+        return communityColors[cid % communityColors.length];
+      }
+      if (node.type === 'user') return node.verified ? '#3b82f6' : '#8b5cf6';
+      return '#10b981';
+    }
+
+    function nodeSize(n) {
+      return n.type === 'user'
+        ? Math.min(5 + Math.log((n.followers || 0) + 1) * 1.5, 25)
+        : Math.min(5 + (n.count || 1) * 1.5, 25);
+    }
+
+    function drawNetwork() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      // edges
+      graphData.links.forEach(link => {
+        const s = nodes.find(n => n.id === link.source);
+        const t = nodes.find(n => n.id === link.target);
+        if (!s || !t) return;
+        const w = link.weight || 1;
+        ctx.lineWidth = Math.min(1 + w*0.5, 5);
+        ctx.strokeStyle = '#d1d5db';
+        ctx.globalAlpha = Math.min(0.3 + w*0.1, 0.8);
+        ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y); ctx.stroke();
+        ctx.globalAlpha = 1;
+      });
+
+      // nodes
+      nodes.forEach(n => {
+        const r = nodeSize(n);
+        ctx.fillStyle = getNodeColor(n);
+        ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI*2); ctx.fill();
+
+        if (r > 12 || n.suspicious) {
+          ctx.strokeStyle = n.suspicious ? '#7f1d1d' : 'white';
+          ctx.lineWidth = n.suspicious ? 3 : 2; ctx.stroke();
+        }
+
+        if (r > 8) {
+          ctx.fillStyle = '#1f2937';
+          ctx.font = `${Math.min(r*0.8, 12)}px sans-serif`;
+          ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+          const label = (n.label || '').substring(0, 20);
+          ctx.fillText(label, n.x, n.y - r - 5);
+        }
+      });
+    }
+
+    // =========================
+    // Hover & Click UX
+    // =========================
+    function getNodeAt(x, y) {
+      if (!nodes?.length) return null;
+      let best = null, bestDist = Infinity;
+      for (const n of nodes) {
+        const r = nodeSize(n);
+        const d = Math.hypot(x - n.x, y - n.y);
+        if (d <= r && d < bestDist) { best = n; bestDist = d; }
+      }
+      return best;
+    }
+
+    function buildAdjacency(graph) {
+      adjacency = new Map();
+      graph.nodes.forEach(n => adjacency.set(n.id, new Set()));
+      graph.links.forEach(l => {
+        if (adjacency.has(l.source)) adjacency.get(l.source).add(l.target);
+        if (adjacency.has(l.target)) adjacency.get(l.target).add(l.source);
+      });
+      graph.nodes.forEach(n => { n.degree = adjacency.get(n.id)?.size || 0; });
+    }
+
+    function postEngagement(p) {
+      const s = p?.data?.stats || {};
+      return (s.diggCount||0) + (s.commentCount||0) + (s.shareCount||0);
+    }
+
+    function samplePostsForNode(node, limit=5) {
+      if (!filteredData?.length) return [];
+      const out = [];
+      if (node.type === 'user') {
+        const wantId = (node.id + '').replace(/^u_/,'');
+        for (const p of filteredData) {
+          const a = p?.data?.author || {};
+          if (String(a.id) === wantId || (a.uniqueId && node.label && a.uniqueId.toLowerCase() === node.label.toLowerCase())) {
+            out.push(p);
+          }
+        }
+      } else if (node.type === 'hashtag') {
+        const wantId = (node.id + '').replace(/^h_/,'');
+        const wantLabel = (node.label || '').toLowerCase();
+        for (const p of filteredData) {
+          const hs = p?.data?.challenges || [];
+          if (hs.some(h => String(h.id) === wantId || (h.title && h.title.toLowerCase() === wantLabel))) out.push(p);
+        }
+      }
+      out.sort((a,b)=>postEngagement(b)-postEngagement(a));
+      return out.slice(0, limit);
+    }
+
+    function highlightNeighbors(node) {
+      const nbs = adjacency.get(node.id) || new Set();
+      ctx.save(); ctx.globalAlpha = 0.15; ctx.fillStyle = '#fde68a';
+      for (const id of nbs) {
+        const nb = idToNode.get(id); if (!nb) continue;
+        ctx.beginPath(); ctx.arc(nb.x, nb.y, nodeSize(nb)+8, 0, Math.PI*2); ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    canvas.addEventListener('mousemove', (e) => {
+      if (!nodes?.length) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left, y = e.clientY - rect.top;
+
+      const n = getNodeAt(x, y);
+      if (n) {
+        hoveredNode = n;
+        canvas.classList.add('hovering');
+
+        // tooltip content
+        const deg = n.degree ?? 0;
+        const label = n.label ?? n.id;
+        const meta = (n.type==='user')
+          ? `${n.verified?'Verified · ':''}${(n.followers||0).toLocaleString()} followers`
+          : `${n.count||0} posts`;
+
+        tooltipEl.innerHTML =
+          `<div style="font-weight:600">${n.type==='user'?'@':''}${label}</div>
+           <div style="opacity:.85">${n.type} · degree ${deg}${meta ? ' · ' + meta : ''}</div>`;
+        tooltipEl.style.display = 'block';
+
+        // place tooltip
+        const pad = 12;
+        let tx = e.clientX + 12, ty = e.clientY + 12;
+        const vw = window.innerWidth, vh = window.innerHeight;
+        tooltipEl.style.left = tx + 'px'; tooltipEl.style.top = ty + 'px';
+        const tb = tooltipEl.getBoundingClientRect();
+        if (tx + tb.width + pad > vw) tooltipEl.style.left = (vw - tb.width - pad) + 'px';
+        if (ty + tb.height + pad > vh) tooltipEl.style.top  = (vh - tb.height - pad) + 'px';
+
+        // redraw with neighbor glow + ring
+        drawNetwork();
+        highlightNeighbors(n);
+        ctx.save(); ctx.strokeStyle = '#111827'; ctx.lineWidth = 2; ctx.globalAlpha = 0.6;
+        ctx.beginPath(); ctx.arc(n.x, n.y, nodeSize(n)+4, 0, Math.PI*2); ctx.stroke(); ctx.restore();
+      } else {
+        hoveredNode = null;
+        canvas.classList.remove('hovering');
+        tooltipEl.style.display = 'none';
+        drawNetwork();
+      }
+    });
+
+    canvas.addEventListener('click', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left, y = e.clientY - rect.top;
+
+      let clicked = null, minDist = Infinity;
+      nodes.forEach(n => {
+        const r = nodeSize(n);
+        const d = Math.hypot(x - n.x, y - n.y);
+        if (d < r && d < minDist) { clicked = n; minDist = d; }
+      });
+
+      if (clicked) {
+        showNodeInfo(clicked);   // keep sidebar
+        openNodeModal(clicked);  // new rich modal
+      }
+    });
+
+    function openNodeModal(node) {
+      modalTitle.textContent = `${node.type==='user'?'@':'#'}${node.label || node.id}`;
+
+      const nbs = Array.from(adjacency.get(node.id) || []);
+      const neighborHTML = nbs.slice(0, 14).map(id => {
+        const lab = idToNode.get(id)?.label || id;
+        return `<code style="background:#f3f4f6; padding:.15rem .35rem; border-radius:6px; margin:.12rem; display:inline-block;">${lab}</code>`;
+      }).join('');
+
+      const samples = samplePostsForNode(node, 6).map(p => {
+        const a = p?.data?.author || {};
+        const u = a?.uniqueId ? `https://www.tiktok.com/@${a.uniqueId}` : null;
+        const cap = (p?.data?.desc || '').slice(0, 220).replace(/</g,'&lt;');
+        const eng = postEngagement(p);
+        const t   = p?.data?.createTime ? new Date(p.data.createTime*1000).toLocaleString() : '';
+        return `<div style="padding:.6rem .6rem; border:1px solid #eee; border-radius:8px; margin:.45rem 0;">
+          <div style="font-weight:600">${a.uniqueId ? '@'+a.uniqueId : '(unknown user)'} ${u?` · <a href="${u}" target="_blank" rel="noopener">profile</a>`:''}</div>
+          <div style="opacity:.95">${cap}${cap.length===220?'…':''}</div>
+          <div style="opacity:.7; margin-top:.2rem">time: ${t} · engagement: ${eng.toLocaleString()}</div>
+        </div>`;
+      }).join('');
+
+      const teach = (() => {
+        const deg = node.degree ?? 0;
+        if (deg >= 12) return `This is a high-degree ${node.type}. Hubs can shape attention flows. Are neighbors from diverse communities, or mostly one echo chamber?`;
+        if (deg <= 1)  return `This ${node.type} has very few connections. Is it peripheral, new, or filtered out by thresholds?`;
+        return `Mid-degree ${node.type}. Check neighbors and example posts to see whether it bridges topics or audiences.`;
+      })();
+
+      modalBody.innerHTML = `
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:8px;">
+          <div><div class="small" style="color:#6b7280;">Type</div><div><b>${node.type}</b></div></div>
+          <div><div class="small" style="color:#6b7280;">Degree</div><div><b>${node.degree ?? 0}</b></div></div>
+          ${node.type==='user'
+            ? `<div><div class="small" style="color:#6b7280;">Followers</div><div><b>${(node.followers||0).toLocaleString()}</b></div></div>
+               <div><div class="small" style="color:#6b7280;">Verified</div><div><b>${node.verified? 'Yes':'No'}</b></div></div>`
+            : `<div><div class="small" style="color:#6b7280;">Usage count</div><div><b>${node.count||0}</b></div></div><div></div>`}
+        </div>
+
+        <div class="small" style="background:#fff7ed; border:1px solid #fde7c7; padding:.6rem .7rem; border-radius:8px; margin:.4rem 0;">
+          <b>Why it matters:</b> ${teach}
+        </div>
+
+        <div style="margin:.6rem 0 .25rem; font-weight:700;">Neighbors (${nbs.length})</div>
+        <div>${neighborHTML || '<span class="small" style="color:#6b7280;">No neighbors</span>'}</div>
+
+        <div style="margin:.9rem 0 .35rem; font-weight:700;">Example posts</div>
+        ${samples || '<div class="small" style="color:#6b7280;">No sample posts found for this node given current filters.</div>'}
+      `;
+      modalEl.style.display = 'flex';
+    }
+    modalClose.addEventListener('click', ()=> modalEl.style.display = 'none');
+    modalEl.addEventListener('click', (e)=> { if (e.target === modalEl) modalEl.style.display = 'none'; });
+
+    function showNodeInfo(node) {
+      let html = `<div class="info-row"><span class="info-label">Label:</span> <span class="info-value">${node.label}</span></div>`;
+      html += `<div class="info-row"><span class="info-label">Type:</span> <span class="info-value">${node.type}</span></div>`;
+      if (node.degree !== undefined) html += `<div class="info-row"><span class="info-label">Degree:</span> <span class="info-value">${node.degree}</span></div>`;
+      if (node.followers !== undefined) html += `<div class="info-row"><span class="info-label">Followers:</span> <span class="info-value">${(node.followers||0).toLocaleString()}</span></div>`;
+      if (node.count !== undefined) html += `<div class="info-row"><span class="info-label">Usage:</span> <span class="info-value">${node.count} posts</span></div>`;
+      if (node.suspicious) {
+        html += `<div class="info-row"><span class="cib-indicator">⚠ SUSPICIOUS ACTIVITY</span></div>`;
+        if (node.cibScore) html += `<div class="info-row"><span class="info-label">CIB Score:</span> <span class="cib-score">${node.cibScore}/100</span></div>`;
+      }
+      if (communities && communities.communities.has(node.id)) {
+        const cid = communities.communities.get(node.id);
+        html += `<div class="info-row"><span class="info-label">Community:</span> <span class="info-value">#${cid + 1}</span></div>`;
+      }
+      if (node.verified) html += `<div class="info-row" style="color:#2563eb; font-weight: 600;">✓ Verified</div>`;
+      nodeDetails.innerHTML = html;
+      nodeInfo.style.display = 'block';
+    }
+    closeInfo.addEventListener('click', ()=> { nodeInfo.style.display = 'none'; });
+
+    // =========================
+    // Communities button
+    // =========================
+    cibBtn.addEventListener('click', detectCIB);
+
+    detectBtn.addEventListener('click', () => {
+      if (!graphData || graphData.nodes.length === 0) return;
+      loading.classList.add('active');
+      loadingText.textContent = 'Detecting communities...';
+      setTimeout(() => {
+        communities = detectCommunities(graphData);
+        if (communities) document.getElementById('stat-communities').textContent = communities.count;
+        drawNetwork();
+        loading.classList.remove('active');
+        updateCoach();
+      }, 100);
+    });
+
+    // =========================
+    // Controls wiring
+    // =========================
+    networkTypeSelect.addEventListener('change', updateNetwork);
+    layoutTypeSelect.addEventListener('change', () => {
+      if (!nodes.length) return;
+      const layout = layoutTypeSelect.value;
+      if (layout === 'force') { startAnimation(); }
+      else { if (animationFrame) cancelAnimationFrame(animationFrame); applyLayout(layout); drawNetwork(); }
+    });
+    engagementFilter.addEventListener('input', (e) => {
+      const value = e.target.value; engagementValue.textContent = `${value}+ interactions`;
+      updateNetwork();
+    });
+    dateStart.addEventListener('change', updateNetwork);
+    dateEnd.addEventListener('change', updateNetwork);
+
+    exportBtn.addEventListener('click', () => {
+      if (!graphData) return;
+      const exportData = {
+        ...graphData,
+        metrics: networkMetrics,
+        communities: communities ? { count: communities.count, assignments: Array.from(communities.communities.entries()) } : null,
+        cibDetection: cibDetection ? {
+          suspiciousUsers: Array.from(cibDetection.suspiciousUsers),
+          indicators: cibDetection.indicators,
+          userScores: Array.from(cibDetection.userScores.entries())
+        } : null
+      };
+      const dataStr = JSON.stringify(exportData, null, 2);
+      const blob = new Blob([dataStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url; link.download = `network_analysis_${Date.now()}.json`; link.click();
+      URL.revokeObjectURL(url);
+    });
+
+    searchInput.addEventListener('input', (e) => {
+      const term = e.target.value.toLowerCase();
+      if (!term || !nodes.length) { drawNetwork(); return; }
+      drawNetwork();
+      const matches = nodes.filter(n => (n.label || '').toLowerCase().includes(term));
+      ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 3;
+      matches.forEach(n => { const r = nodeSize(n); ctx.beginPath(); ctx.arc(n.x, n.y, r+3, 0, Math.PI*2); ctx.stroke(); });
+    });
+
+    window.addEventListener('resize', () => {
+      if (graphData && graphData.nodes.length > 0) initializeVisualization();
+    });
+
+    // =========================
+    // Teaching coach (dynamic)
+    // =========================
+    function updateCoach() {
+      const coach = document.getElementById('edu-coach');
+      if (!graphData || !graphData.nodes.length) {
+        coach.innerHTML = `<p><b>Coach:</b> load data, pick a network type, then hover or click nodes.</p>`;
+        return;
+      }
+      const dens = networkMetrics?.density ?? 0;
+      const commCount = communities?.count ?? 0;
+
+      let hint = '';
+      if (networkTypeSelect.value === 'coHashtag') {
+        hint = `You’re looking at hashtag co-occurrence. Dense cliques can reflect coordinated messaging or just memes — check example posts in the modal.`;
+      } else if (networkTypeSelect.value === 'userHashtag') {
+        hint = `This is a bipartite user↔hashtag graph. Click a hashtag hub: who uses it? One community or many?`;
+      } else if (networkTypeSelect.value === 'mention') {
+        hint = `Mention networks highlight attention-giving. Are hubs amplifying each other, or bridging clusters?`;
+      } else {
+        hint = `Hashtag usage view shows which tags carry engagement; hubs suggest narrative anchors.`;
+      }
+
+      const densNote = (parseFloat(dens) >= 0.15)
+        ? `High density (${dens}) ⇒ tight interlinking. Inspect hubs for templated captions or synchronized timing.`
+        : `Lower density (${dens}) ⇒ fragmented/diverse activity. Look for bridges and outliers.`;
+
+      const commNote = commCount
+        ? `Detected <b>${commCount}</b> community${commCount>1?'ies':''}. Compare top tags/posts across them for narrative splits.`
+        : `Run “Detect Communities” to see sub-audiences.`;
+
+      coach.innerHTML = `
+        <p><b>Coach:</b> ${hint}</p>
+        <p>${densNote}</p>
+        <p>${commNote}</p>
+      `;
+    }
+  </script>
+</body>
+</html>
