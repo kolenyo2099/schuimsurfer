@@ -209,22 +209,6 @@
         <div class="control-group">
           <label class="control-label">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
-              <circle cx="12" cy="10" r="3"></circle>
-            </svg>
-            Layout Algorithm
-          </label>
-          <select id="layout-type">
-            <option value="force">Force-Directed</option>
-            <option value="circular">Circular</option>
-            <option value="radial">Radial</option>
-            <option value="grid">Grid</option>
-          </select>
-        </div>
-
-        <div class="control-group">
-          <label class="control-label">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
               <line x1="16" y1="2" x2="16" y2="6"></line>
               <line x1="8" y1="2" x2="8" y2="6"></line>
@@ -424,7 +408,6 @@
     // =========================
     const fileInput = document.getElementById('file-input');
     const networkTypeSelect = document.getElementById('network-type');
-    const layoutTypeSelect = document.getElementById('layout-type');
     const engagementFilter = document.getElementById('engagement-filter');
     const engagementValue = document.getElementById('engagement-value');
     const cibThreshold = document.getElementById('cib-threshold');
@@ -974,44 +957,6 @@
       });
     }
 
-    function applyCircularLayout() {
-      const centerX = canvas.width / 2, centerY = canvas.height / 2;
-      const radius = Math.min(canvas.width, canvas.height) * 0.35;
-      nodes.forEach((node, i) => {
-        const angle = (i / nodes.length) * 2 * Math.PI;
-        node.x = centerX + radius * Math.cos(angle);
-        node.y = centerY + radius * Math.sin(angle);
-        node.vx = 0; node.vy = 0;
-      });
-    }
-
-    function applyRadialLayout() {
-      const centerX = canvas.width / 2, centerY = canvas.height / 2;
-      const sorted = [...nodes].sort((a,b)=> (b.degree||0) - (a.degree||0));
-      sorted.forEach((node, i) => {
-        const layer = Math.floor(Math.sqrt(i));
-        const radius = 50 + layer * 80;
-        const nodesInLayer = Math.max(6, Math.floor(2 * Math.PI * radius / 40));
-        const angle = (i % nodesInLayer) * (2 * Math.PI / nodesInLayer);
-        node.x = centerX + radius * Math.cos(angle);
-        node.y = centerY + radius * Math.sin(angle);
-        node.vx = 0; node.vy = 0;
-      });
-    }
-
-    function applyGridLayout() {
-      const cols = Math.ceil(Math.sqrt(nodes.length));
-      const cellWidth = canvas.width / (cols + 1);
-      const rows = Math.ceil(nodes.length / cols);
-      const cellHeight = canvas.height / (rows + 1);
-      nodes.forEach((node, i) => {
-        const row = Math.floor(i / cols), col = i % cols;
-        node.x = cellWidth * (col + 1);
-        node.y = cellHeight * (row + 1);
-        node.vx = 0; node.vy = 0;
-      });
-    }
-
     function initializeVisualization() {
       if (!graphData || graphData.nodes.length === 0) {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -1027,17 +972,7 @@
         vx: 0, vy: 0
       }));
 
-      const layout = layoutTypeSelect.value;
-      if (layout !== 'force') { applyLayout(layout); drawNetwork(); }
-      else { startAnimation(); }
-    }
-
-    function applyLayout(type) {
-      switch (type) {
-        case 'circular': applyCircularLayout(); break;
-        case 'radial':   applyRadialLayout();   break;
-        case 'grid':     applyGridLayout();     break;
-      }
+      startAnimation();
     }
 
     function startAnimation() {
@@ -1323,12 +1258,6 @@
     // Controls wiring
     // =========================
     networkTypeSelect.addEventListener('change', updateNetwork);
-    layoutTypeSelect.addEventListener('change', () => {
-      if (!nodes.length) return;
-      const layout = layoutTypeSelect.value;
-      if (layout === 'force') { startAnimation(); }
-      else { if (animationFrame) cancelAnimationFrame(animationFrame); applyLayout(layout); drawNetwork(); }
-    });
     engagementFilter.addEventListener('input', (e) => {
       const value = e.target.value; engagementValue.textContent = `${value}+ interactions`;
       updateNetwork();
