@@ -636,18 +636,56 @@
         });
         results.indicators.duplicateCaptions = duplicateCaptionUsers;
 
-        // risk scores
+        // risk scores and reasons
         results.userScores = new Map();
+        results.userReasons = new Map();
         results.suspiciousUsers.forEach(userId => {
           let score = 0;
-          if (synchGroups.some(g => g.u1===userId || g.u2===userId)) score += 25;
+          let reasons = [];
+          
+          if (synchGroups.some(g => g.u1===userId || g.u2===userId)) {
+            score += 25;
+            const syncPartners = synchGroups.filter(g => g.u1===userId || g.u2===userId);
+            reasons.push(`Synchronized posting with ${syncPartners.length} other account(s)`);
+          }
+          
           const userPosts = filteredData.filter(p => p.data?.author?.id === userId);
           const userHashtags = userPosts.map(p => p.data?.challenges?.map(c => c.title).join(',') || '');
-          if (userHashtags.some(h => userHashtags.filter(x => x===h).length >= 2)) score += 20;
-          if (userPosts.length >= minPosts) score += 15;
+          if (userHashtags.some(h => userHashtags.filter(x => x===h).length >= 2)) {
+            score += 20;
+            reasons.push('Repeated identical hashtag sequences');
+          }
+          
+          if (userPosts.length >= minPosts) {
+            const ts = userPosts.map(p => p.data?.createTime).filter(Boolean).sort();
+            if (ts.length > 1) {
+              const span = ts[ts.length-1] - ts[0];
+              const postsPerDay = span>0 ? (userPosts.length / (span / 86400)) : userPosts.length;
+              if (postsPerDay > Math.max(10, 50/sensitivity)) {
+                score += 15;
+                reasons.push(`High-volume posting (${postsPerDay.toFixed(1)} posts/day)`);
+              }
+            }
+          }
+          
           const userCaptions = userPosts.map(p => (p.data?.desc || '').toLowerCase().replace(/[^\w\s]/g,'').trim());
-          if (userCaptions.some(c => userCaptions.filter(x => x===c).length >= 2)) score += 20;
+          if (userCaptions.some(c => userCaptions.filter(x => x===c).length >= 2)) {
+            score += 20;
+            reasons.push('Duplicate captions across posts');
+          }
+          
+          // Check similar username
+          const author = userPosts[0]?.data?.author;
+          if (author) {
+            const username = author.uniqueId || author.nickname || '';
+            const prefix = username.substring(0, Math.min(7, username.length));
+            if (prefix.length >= 4 && usernames.has(prefix) && usernames.get(prefix).size >= Math.max(3, Math.floor(12/sensitivity))) {
+              reasons.push('Similar username pattern detected');
+            }
+          }
+          
           results.userScores.set(userId, score);
+          results.userReasons.set(userId, reasons);
         });
 
         cibDetection = results;
@@ -660,6 +698,7 @@
             if (results.suspiciousUsers.has(node.id) || results.suspiciousUsers.has(plainId)) {
               node.suspicious = true;
               node.cibScore = results.userScores.get(node.id) || results.userScores.get(plainId) || 0;
+              node.cibReasons = results.userReasons.get(node.id) || results.userReasons.get(plainId) || [];
             }
           });
           drawNetwork();
@@ -1201,6 +1240,17 @@
             : `<div><div class="small" style="color:#6b7280;">Usage count</div><div><b>${node.count||0}</b></div></div><div></div>`}
         </div>
 
+        ${node.suspicious ? `
+        <div class="warning-box" style="margin:.5rem 0;">
+          <div style="font-weight:700; color:#991b1b; margin-bottom:.4rem;">⚠️ CIB DETECTED (Risk Score: ${node.cibScore}/100)</div>
+          <div style="font-size:0.75rem; color:#7f1d1d; margin-bottom:.3rem;"><b>Indicators triggered:</b></div>
+          <ul style="margin:0; padding-left:1.2rem; list-style:disc;">
+            ${(node.cibReasons || []).map(reason => `<li style="margin:.15rem 0; color:#991b1b;">${reason}</li>`).join('')}
+          </ul>
+          <p style="margin-top:.4rem;"><strong>Note:</strong> These are behavioral indicators. Verify with manual inspection before drawing conclusions.</p>
+        </div>
+        ` : ''}
+
         <div class="small" style="background:#fff7ed; border:1px solid #fde7c7; padding:.6rem .7rem; border-radius:8px; margin:.4rem 0;">
           <b>Why it matters:</b> ${teach}
         </div>
@@ -1274,7 +1324,8 @@
         cibDetection: cibDetection ? {
           suspiciousUsers: Array.from(cibDetection.suspiciousUsers),
           indicators: cibDetection.indicators,
-          userScores: Array.from(cibDetection.userScores.entries())
+          userScores: Array.from(cibDetection.userScores.entries()),
+          userReasons: Array.from(cibDetection.userReasons.entries())
         } : null
       };
       const dataStr = JSON.stringify(exportData, null, 2);
