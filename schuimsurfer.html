@@ -653,6 +653,15 @@
         });
         results.indicators.duplicateCaptions = duplicateCaptionUsers;
 
+        // Build userId -> username lookup
+        const userIdToName = new Map();
+        filteredData.forEach(post => {
+          const author = post.data?.author;
+          if (author?.id) {
+            userIdToName.set(author.id, author.uniqueId || author.nickname || `user_${author.id}`);
+          }
+        });
+        
         // risk scores and reasons
         results.userScores = new Map();
         results.userReasons = new Map();
@@ -661,24 +670,31 @@
           let reasons = [];
           
           // Check synchronized posting
-          if (synchGroups.some(g => g.u1===userId || g.u2===userId)) {
+          const userSyncGroups = synchGroups.filter(g => g.u1===userId || g.u2===userId);
+          if (userSyncGroups.length > 0) {
             score += 25;
-            const syncPartners = synchGroups.filter(g => g.u1===userId || g.u2===userId);
-            reasons.push(`Synchronized posting with ${syncPartners.length} other account(s)`);
+            const partners = userSyncGroups.map(g => {
+              const partnerId = g.u1 === userId ? g.u2 : g.u1;
+              return userIdToName.get(partnerId) || partnerId;
+            }).slice(0, 5);
+            const more = userSyncGroups.length > 5 ? ` and ${userSyncGroups.length - 5} more` : '';
+            reasons.push(`Synchronized posting with: ${partners.join(', ')}${more}`);
           }
           
           // Check identical hashtag sequences (with other users)
           const userPosts = filteredData.filter(p => p.data?.author?.id === userId);
-          const userHashtagSeqs = userPosts.map(p => p.data?.challenges?.map(c => c.title).join(',') || '').filter(Boolean);
-          let foundInHashtagGroup = false;
+          const hashtagPartners = [];
           hashtagSequences.forEach((users, seq) => {
             if (users.has(userId) && users.size >= Math.max(3, Math.floor(15/sensitivity))) {
-              foundInHashtagGroup = true;
+              const others = Array.from(users).filter(u => u !== userId).map(u => userIdToName.get(u) || u);
+              hashtagPartners.push(...others);
             }
           });
-          if (foundInHashtagGroup) {
+          if (hashtagPartners.length > 0) {
             score += 20;
-            reasons.push('Uses identical hashtag sequences with other accounts');
+            const display = hashtagPartners.slice(0, 5);
+            const more = hashtagPartners.length > 5 ? ` and ${hashtagPartners.length - 5} more` : '';
+            reasons.push(`Identical hashtag sequences with: ${display.join(', ')}${more}`);
           }
           
           // Check high-volume posting
@@ -695,15 +711,18 @@
           }
           
           // Check duplicate captions (with other users)
-          let foundInCaptionGroup = false;
+          const captionPartners = [];
           captions.forEach((users, caption) => {
             if (users.has(userId) && users.size >= Math.max(2, Math.floor(8/sensitivity))) {
-              foundInCaptionGroup = true;
+              const others = Array.from(users).filter(u => u !== userId).map(u => userIdToName.get(u) || u);
+              captionPartners.push(...others);
             }
           });
-          if (foundInCaptionGroup) {
+          if (captionPartners.length > 0) {
             score += 20;
-            reasons.push('Shares duplicate captions with other accounts');
+            const display = captionPartners.slice(0, 5);
+            const more = captionPartners.length > 5 ? ` and ${captionPartners.length - 5} more` : '';
+            reasons.push(`Duplicate captions with: ${display.join(', ')}${more}`);
           }
           
           // Check similar username pattern
@@ -713,7 +732,10 @@
             const prefix = username.substring(0, Math.min(7, username.length));
             if (prefix.length >= 4 && usernames.has(prefix) && usernames.get(prefix).size >= Math.max(3, Math.floor(12/sensitivity))) {
               score += 10;
-              reasons.push(`Similar username pattern with ${usernames.get(prefix).size - 1} other account(s)`);
+              const similarUsers = Array.from(usernames.get(prefix)).filter(u => u !== userId).map(u => userIdToName.get(u) || u);
+              const display = similarUsers.slice(0, 5);
+              const more = similarUsers.length > 5 ? ` and ${similarUsers.length - 5} more` : '';
+              reasons.push(`Similar username pattern with: ${display.join(', ')}${more}`);
             }
           }
           
