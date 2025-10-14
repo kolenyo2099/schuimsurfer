@@ -401,6 +401,7 @@
     <div class="loading-text" id="loading-text">Processing...</div>
   </div>
 
+  <script src="./vendor/cosmos/dist/index.min.js"></script>
   <script>
     // =========================
     // Global state
@@ -408,16 +409,19 @@
     let rawData = [];
     let filteredData = [];
     let graphData = null;
-    let nodes = [];
     let communities = null;
     let cibDetection = null;
-    let animationFrame = null;
     let networkMetrics = null;
 
     // Hover & modal helpers / indexes
-    let idToNode = new Map();     // node.id -> node (with x,y)
+    let idToNode = new Map();     // node.id -> node (with attributes)
     let adjacency = new Map();    // node.id -> Set(neighborIds)
     let hoveredNode = null;
+    let cosmographInstance = null;
+    let hoveredNodeId = null;
+    let hoveredNeighborIds = new Set();
+    let focusedNodeId = null;
+    let searchMatchIds = new Set();
 
     // =========================
     // DOM elements
@@ -438,7 +442,6 @@
     const detectBtn = document.getElementById('detect-btn');
     const cibBtn = document.getElementById('cib-btn');
     const canvas = document.getElementById('network-canvas');
-    const ctx = canvas.getContext('2d');
     const emptyState = document.getElementById('empty-state');
     const statsDiv = document.getElementById('stats');
     const nodeInfo = document.getElementById('node-info');
@@ -747,16 +750,17 @@
         displayCIBResults(results);
 
         // mark nodes
-        if (nodes.length > 0) {
-          nodes.forEach(node => {
+        if (graphData?.nodes?.length) {
+          graphData.nodes.forEach(node => {
             const plainId = node.id.replace(/^u_/,'');
             if (results.suspiciousUsers.has(node.id) || results.suspiciousUsers.has(plainId)) {
               node.suspicious = true;
               node.cibScore = results.userScores.get(node.id) || results.userScores.get(plainId) || 0;
               node.cibReasons = results.userReasons.get(node.id) || results.userReasons.get(plainId) || [];
             }
+            idToNode.set(node.id, node);
           });
-          drawNetwork();
+          refreshCosmographStyles();
         }
         document.getElementById('stat-suspicious').textContent = results.suspiciousUsers.size;
 
@@ -1009,79 +1013,65 @@
         buildAdjacency(graphData);
         idToNode = new Map(graphData.nodes.map(n => [n.id, n]));
 
-        initializeVisualization();
+        hoveredNode = null;
+        hoveredNodeId = null;
+        hoveredNeighborIds = new Set();
+        focusedNodeId = null;
+        searchMatchIds.clear();
+        cosmographInstance?.setFocusedNodeById(undefined);
+        tooltipEl.style.display = 'none';
+
+        updateCosmographData();
         loading.classList.remove('active');
         updateCoach();
       }, 100);
     }
 
     // =========================
-    // Layouts & drawing
+    // Cosmograph integration
     // =========================
-    function applyForceLayout() {
-      const centerX = canvas.width / 2, centerY = canvas.height / 2;
-      nodes.forEach(node => {
-        nodes.forEach(other => {
-          if (node === other) return;
-          const dx = node.x - other.x, dy = node.y - other.y;
-          const dist = Math.sqrt(dx*dx + dy*dy) || 1;
-          const force = Math.min(1000 / (dist*dist), 10);
-          node.vx += (dx / dist) * force;
-          node.vy += (dy / dist) * force;
-        });
-        graphData.links.forEach(link => {
-          const source = nodes.find(n => n.id === link.source);
-          const target = nodes.find(n => n.id === link.target);
-          if (!source || !target) return;
-          if (node === source) {
-            const dx = target.x - source.x, dy = target.y - source.y;
-            const dist = Math.sqrt(dx*dx + dy*dy) || 1;
-            const force = (dist - 150) * 0.05;
-            node.vx += (dx / dist) * force;
-            node.vy += (dy / dist) * force;
-          }
-        });
-        node.vx += (centerX - node.x) * 0.002;
-        node.vy += (centerY - node.y) * 0.002;
-        node.vx *= 0.85; node.vy *= 0.85;
-        node.x += node.vx; node.y += node.vy;
-        const margin = 30;
-        node.x = Math.max(margin, Math.min(canvas.width - margin, node.x));
-        node.y = Math.max(margin, Math.min(canvas.height - margin, node.y));
+    function resizeCanvas() {
+      const rect = canvas.getBoundingClientRect();
+      const ratio = window.devicePixelRatio || 1;
+      canvas.width = Math.max(rect.width, 1) * ratio;
+      canvas.height = Math.max(rect.height, 1) * ratio;
+    }
+
+    const nodeColorAccessor = (node) => getNodeColor(node);
+    const nodeSizeAccessor = (node) => nodeSize(node);
+    const linkColorAccessor = (link) => getLinkColor(link);
+    const linkWidthAccessor = (link) => getLinkWidth(link);
+
+    function ensureCosmograph() {
+      if (cosmographInstance) return;
+      if (!window.Cosmos) {
+        console.error('Cosmograph engine not loaded');
+        return;
+      }
+      resizeCanvas();
+      cosmographInstance = new Cosmos.Graph(canvas, {
+        backgroundColor: '#ffffff',
+        nodeColor: nodeColorAccessor,
+        nodeSize: nodeSizeAccessor,
+        renderLinks: true,
+        linkColor: linkColorAccessor,
+        linkWidth: linkWidthAccessor,
+        hoveredNodeRingColor: '#111827',
+        focusedNodeRingColor: '#111827',
+        onNodeMouseOver: handleNodeMouseOver,
+        onNodeMouseOut: handleNodeMouseOut,
+        onMouseMove: handleMouseMove,
+        onClick: handleNodeClick
       });
     }
 
-    function initializeVisualization() {
-      if (!graphData || graphData.nodes.length === 0) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        return;
-      }
-      canvas.width = canvas.offsetWidth;
-      canvas.height = canvas.offsetHeight;
-
-      nodes = graphData.nodes.map(n => ({
-        ...n,
-        x: canvas.width/2 + (Math.random()-0.5)*100,
-        y: canvas.height/2 + (Math.random()-0.5)*100,
-        vx: 0, vy: 0
-      }));
-
-      startAnimation();
-    }
-
-    function startAnimation() {
-      if (animationFrame) cancelAnimationFrame(animationFrame);
-      let iteration = 0, maxIterations = 200;
-      function animate() {
-        if (iteration++ > maxIterations) return;
-        applyForceLayout(); drawNetwork();
-        animationFrame = requestAnimationFrame(animate);
-      }
-      animate();
-    }
-
     function getNodeColor(node) {
+      if (!node) return '#9ca3af';
+      if (node.id === hoveredNodeId) return '#111827';
+      if (hoveredNeighborIds.has(node.id)) return '#f59e0b';
       if (node.suspicious) return '#dc2626';
+      if (searchMatchIds.size && searchMatchIds.has(node.id)) return '#ef4444';
+      if (focusedNodeId && node.id === focusedNodeId) return '#2563eb';
       if (communities && communities.communities.has(node.id)) {
         const cid = communities.communities.get(node.id);
         return communityColors[cid % communityColors.length];
@@ -1090,80 +1080,155 @@
       return '#10b981';
     }
 
-    function nodeSize(n) {
+    function nodeSize(node) {
+      if (!node) return 8;
       const sizeBy = nodeSizeBySelect.value;
-      
+
       switch (sizeBy) {
-        case 'degree':
-          const degree = n.degree || 0;
+        case 'degree': {
+          const degree = node.degree || 0;
           return Math.min(5 + Math.sqrt(degree) * 3, 30);
-        
+        }
         case 'followers':
-          if (n.type === 'user') {
-            return Math.min(5 + Math.log((n.followers || 0) + 1) * 1.5, 25);
-          } else {
-            return Math.min(5 + (n.count || 1) * 1.5, 25);
+          if (node.type === 'user') {
+            return Math.min(5 + Math.log((node.followers || 0) + 1) * 1.5, 25);
           }
-        
+          return Math.min(5 + (node.count || 1) * 1.5, 25);
         case 'uniform':
-          return 8;
-        
         default:
           return 8;
       }
     }
 
-    function drawNetwork() {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    function linkEndpointId(value) {
+      if (value && typeof value === 'object') {
+        return value.id ?? value.source ?? value.target ?? value;
+      }
+      return value;
+    }
 
-      // edges
-      graphData.links.forEach(link => {
-        const s = nodes.find(n => n.id === link.source);
-        const t = nodes.find(n => n.id === link.target);
-        if (!s || !t) return;
-        const w = link.weight || 1;
-        ctx.lineWidth = Math.min(1 + w*0.5, 5);
-        ctx.strokeStyle = '#d1d5db';
-        ctx.globalAlpha = Math.min(0.3 + w*0.1, 0.8);
-        ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y); ctx.stroke();
-        ctx.globalAlpha = 1;
+    function getLinkColor(link) {
+      if (!link) return '#d1d5db';
+      const sourceId = linkEndpointId(link.source);
+      const targetId = linkEndpointId(link.target);
+      if (hoveredNodeId && (sourceId === hoveredNodeId || targetId === hoveredNodeId)) {
+        return '#f59e0b';
+      }
+      return '#d1d5db';
+    }
+
+    function getLinkWidth(link) {
+      if (!link) return 1;
+      const w = link.weight || 1;
+      return Math.min(1 + w * 0.5, 5);
+    }
+
+    function refreshCosmographStyles() {
+      if (!cosmographInstance) return;
+      cosmographInstance.setConfig({
+        nodeColor: nodeColorAccessor,
+        nodeSize: nodeSizeAccessor,
+        linkColor: linkColorAccessor,
+        linkWidth: linkWidthAccessor,
+        hoveredNodeRingColor: '#111827',
+        focusedNodeRingColor: '#111827'
       });
+    }
 
-      // nodes
-      nodes.forEach(n => {
-        const r = nodeSize(n);
-        ctx.fillStyle = getNodeColor(n);
-        ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI*2); ctx.fill();
+    function updateCosmographData() {
+      if (!cosmographInstance) ensureCosmograph();
+      if (!cosmographInstance) return;
+      if (!graphData || !graphData.nodes.length) {
+        cosmographInstance.setData([], []);
+        return;
+      }
+      resizeCanvas();
+      cosmographInstance.setData(graphData.nodes, graphData.links);
+      cosmographInstance.fitView(250);
+      refreshCosmographStyles();
+    }
 
-        if (r > 12 || n.suspicious) {
-          ctx.strokeStyle = n.suspicious ? '#7f1d1d' : 'white';
-          ctx.lineWidth = n.suspicious ? 3 : 2; ctx.stroke();
-        }
+    function handleNodeMouseOver(node, index, nodePosition, event) {
+      if (!node) return;
+      hoveredNode = node;
+      hoveredNodeId = node.id;
+      hoveredNeighborIds = new Set(adjacency.get(node.id) || []);
+      updateTooltipContent(node);
+      tooltipEl.style.display = 'block';
+      updateTooltipPosition(event, nodePosition);
+      cosmographInstance?.setFocusedNodeById(node.id);
+      refreshCosmographStyles();
+    }
 
-        if (r > 8) {
-          ctx.fillStyle = '#1f2937';
-          ctx.font = `${Math.min(r*0.8, 12)}px sans-serif`;
-          ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-          const label = (n.label || '').substring(0, 20);
-          ctx.fillText(label, n.x, n.y - r - 5);
-        }
-      });
+    function handleMouseMove(node, index, nodePosition, event) {
+      if (!hoveredNode) return;
+      updateTooltipPosition(event, nodePosition);
+    }
+
+    function handleNodeMouseOut() {
+      hoveredNode = null;
+      hoveredNodeId = null;
+      hoveredNeighborIds = new Set();
+      tooltipEl.style.display = 'none';
+      cosmographInstance?.setFocusedNodeById(focusedNodeId || undefined);
+      refreshCosmographStyles();
+    }
+
+    function handleNodeClick(node) {
+      if (!node) {
+        focusedNodeId = null;
+        cosmographInstance?.setFocusedNodeById(undefined);
+        return;
+      }
+      focusedNodeId = node.id;
+      cosmographInstance?.setFocusedNodeById(node.id);
+      showNodeInfo(node);
+      openNodeModal(node);
+      refreshCosmographStyles();
+    }
+
+    function updateTooltipContent(node) {
+      const deg = node.degree ?? 0;
+      const label = node.label ?? node.id;
+      const meta = (node.type === 'user')
+        ? `${node.verified ? 'Verified · ' : ''}${(node.followers || 0).toLocaleString()} followers`
+        : `${node.count || 0} posts`;
+      tooltipEl.innerHTML = `
+        <div style="font-weight:600">${node.type === 'user' ? '@' : ''}${label}</div>
+        <div style="opacity:.85">${node.type} · degree ${deg}${meta ? ' · ' + meta : ''}</div>
+      `;
+    }
+
+    function updateTooltipPosition(event, nodePosition) {
+      if (!tooltipEl) return;
+      const pad = 12;
+      let tx = 0;
+      let ty = 0;
+      if (event && typeof event.clientX === 'number' && typeof event.clientY === 'number') {
+        tx = event.clientX + pad;
+        ty = event.clientY + pad;
+      } else if (cosmographInstance && nodePosition) {
+        const [sx, sy] = cosmographInstance.spaceToScreenPosition(nodePosition);
+        const rect = canvas.getBoundingClientRect();
+        tx = rect.left + sx + pad;
+        ty = rect.top + sy + pad;
+      } else {
+        return;
+      }
+      tooltipEl.style.display = 'block';
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const width = tooltipEl.offsetWidth || 160;
+      const height = tooltipEl.offsetHeight || 60;
+      if (tx + width + pad > vw) tx = vw - width - pad;
+      if (ty + height + pad > vh) ty = vh - height - pad;
+      tooltipEl.style.left = `${tx}px`;
+      tooltipEl.style.top = `${ty}px`;
     }
 
     // =========================
     // Hover & Click UX
     // =========================
-    function getNodeAt(x, y) {
-      if (!nodes?.length) return null;
-      let best = null, bestDist = Infinity;
-      for (const n of nodes) {
-        const r = nodeSize(n);
-        const d = Math.hypot(x - n.x, y - n.y);
-        if (d <= r && d < bestDist) { best = n; bestDist = d; }
-      }
-      return best;
-    }
-
     function buildAdjacency(graph) {
       adjacency = new Map();
       graph.nodes.forEach(n => adjacency.set(n.id, new Set()));
@@ -1201,77 +1266,6 @@
       out.sort((a,b)=>postEngagement(b)-postEngagement(a));
       return out.slice(0, limit);
     }
-
-    function highlightNeighbors(node) {
-      const nbs = adjacency.get(node.id) || new Set();
-      ctx.save(); ctx.globalAlpha = 0.15; ctx.fillStyle = '#fde68a';
-      for (const id of nbs) {
-        const nb = idToNode.get(id); if (!nb) continue;
-        ctx.beginPath(); ctx.arc(nb.x, nb.y, nodeSize(nb)+8, 0, Math.PI*2); ctx.fill();
-      }
-      ctx.restore();
-    }
-
-    canvas.addEventListener('mousemove', (e) => {
-      if (!nodes?.length) return;
-      const rect = canvas.getBoundingClientRect();
-      const x = e.clientX - rect.left, y = e.clientY - rect.top;
-
-      const n = getNodeAt(x, y);
-      if (n) {
-        hoveredNode = n;
-        canvas.classList.add('hovering');
-
-        // tooltip content
-        const deg = n.degree ?? 0;
-        const label = n.label ?? n.id;
-        const meta = (n.type==='user')
-          ? `${n.verified?'Verified · ':''}${(n.followers||0).toLocaleString()} followers`
-          : `${n.count||0} posts`;
-
-        tooltipEl.innerHTML =
-          `<div style="font-weight:600">${n.type==='user'?'@':''}${label}</div>
-           <div style="opacity:.85">${n.type} · degree ${deg}${meta ? ' · ' + meta : ''}</div>`;
-        tooltipEl.style.display = 'block';
-
-        // place tooltip
-        const pad = 12;
-        let tx = e.clientX + 12, ty = e.clientY + 12;
-        const vw = window.innerWidth, vh = window.innerHeight;
-        tooltipEl.style.left = tx + 'px'; tooltipEl.style.top = ty + 'px';
-        const tb = tooltipEl.getBoundingClientRect();
-        if (tx + tb.width + pad > vw) tooltipEl.style.left = (vw - tb.width - pad) + 'px';
-        if (ty + tb.height + pad > vh) tooltipEl.style.top  = (vh - tb.height - pad) + 'px';
-
-        // redraw with neighbor glow + ring
-        drawNetwork();
-        highlightNeighbors(n);
-        ctx.save(); ctx.strokeStyle = '#111827'; ctx.lineWidth = 2; ctx.globalAlpha = 0.6;
-        ctx.beginPath(); ctx.arc(n.x, n.y, nodeSize(n)+4, 0, Math.PI*2); ctx.stroke(); ctx.restore();
-      } else {
-        hoveredNode = null;
-        canvas.classList.remove('hovering');
-        tooltipEl.style.display = 'none';
-        drawNetwork();
-      }
-    });
-
-    canvas.addEventListener('click', (e) => {
-      const rect = canvas.getBoundingClientRect();
-      const x = e.clientX - rect.left, y = e.clientY - rect.top;
-
-      let clicked = null, minDist = Infinity;
-      nodes.forEach(n => {
-        const r = nodeSize(n);
-        const d = Math.hypot(x - n.x, y - n.y);
-        if (d < r && d < minDist) { clicked = n; minDist = d; }
-      });
-
-      if (clicked) {
-        showNodeInfo(clicked);   // keep sidebar
-        openNodeModal(clicked);  // new rich modal
-      }
-    });
 
     function openNodeModal(node) {
       modalTitle.textContent = `${node.type==='user'?'@':'#'}${node.label || node.id}`;
@@ -1370,7 +1364,7 @@
       setTimeout(() => {
         communities = detectCommunities(graphData);
         if (communities) document.getElementById('stat-communities').textContent = communities.count;
-        drawNetwork();
+        refreshCosmographStyles();
         loading.classList.remove('active');
         updateCoach();
       }, 100);
@@ -1381,7 +1375,7 @@
     // =========================
     networkTypeSelect.addEventListener('change', updateNetwork);
     nodeSizeBySelect.addEventListener('change', () => {
-      if (nodes.length > 0) drawNetwork();
+      refreshCosmographStyles();
     });
     engagementFilter.addEventListener('input', (e) => {
       const value = e.target.value; engagementValue.textContent = `${value}+ interactions`;
@@ -1413,15 +1407,30 @@
 
     searchInput.addEventListener('input', (e) => {
       const term = e.target.value.toLowerCase();
-      if (!term || !nodes.length) { drawNetwork(); return; }
-      drawNetwork();
-      const matches = nodes.filter(n => (n.label || '').toLowerCase().includes(term));
-      ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 3;
-      matches.forEach(n => { const r = nodeSize(n); ctx.beginPath(); ctx.arc(n.x, n.y, r+3, 0, Math.PI*2); ctx.stroke(); });
+      if (!graphData?.nodes?.length) {
+        searchMatchIds.clear();
+        refreshCosmographStyles();
+        return;
+      }
+      if (!term) {
+        searchMatchIds.clear();
+        refreshCosmographStyles();
+        return;
+      }
+      searchMatchIds = new Set(
+        graphData.nodes
+          .filter(n => (n.label || '').toLowerCase().includes(term))
+          .map(n => n.id)
+      );
+      refreshCosmographStyles();
     });
 
     window.addEventListener('resize', () => {
-      if (graphData && graphData.nodes.length > 0) initializeVisualization();
+      if (graphData && graphData.nodes.length > 0) {
+        resizeCanvas();
+        cosmographInstance?.fitView(250);
+        refreshCosmographStyles();
+      }
     });
 
     // =========================
