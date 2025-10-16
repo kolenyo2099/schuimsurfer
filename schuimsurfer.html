@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Zeeschuimer Network Visualizer Pro</title>
+  <title>SchuimSurfer</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -144,7 +144,11 @@
       <div class="header-top">
         <div>
           <h1>Zeeschuim Surfer</h1>
-          <div class="subtitle">Basic network analysis and CIB detection</div>
+          <div class="subtitle">
+            Basic network analysis and CIB detection
+            <span id="platform-indicator" style="margin-left:0.5rem; opacity:0.7;"></span>
+            <span id="rendering-indicator" style="margin-left:0.5rem; opacity:0.7; font-size:0.75rem;"></span>
+          </div>
         </div>
         <label class="upload-btn">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -203,6 +207,8 @@
             <option value="coHashtag">Hashtag Co-occurrence</option>
             <option value="userHashtag">User-Hashtag Network</option>
             <option value="hashtag">Hashtag Usage</option>
+            <option value="photoTag" title="Instagram only: users tagged in photos">📷 Photo Tag Network (Instagram)</option>
+            <option value="location" title="Instagram only: posts by location">📍 Location Network (Instagram)</option>
           </select>
         </div>
 
@@ -352,6 +358,7 @@
           <div class="legend-item"><div class="legend-dot blue" style="background:#3b82f6;"></div><span>Verified User</span></div>
           <div class="legend-item"><div class="legend-dot purple" style="background:#8b5cf6;"></div><span>Regular User</span></div>
           <div class="legend-item"><div class="legend-dot green" style="background:#10b981;"></div><span>Hashtag</span></div>
+          <div class="legend-item"><div class="legend-dot" style="background:#f59e0b;"></div><span>Location (Instagram)</span></div>
           <div class="legend-note">Red nodes indicate accounts flagged as potentially coordinated based on behavioral indicators.</div>
         </div>
 
@@ -413,15 +420,13 @@
     let cibDetection = null;
     let networkMetrics = null;
 
+    // Expose nodes globally for WebGL renderer access
+    window.nodes = nodes;
+
     // Hover & modal helpers / indexes
     let idToNode = new Map();     // node.id -> node (with attributes)
     let adjacency = new Map();    // node.id -> Set(neighborIds)
     let hoveredNode = null;
-    let cosmographInstance = null;
-    let hoveredNodeId = null;
-    let hoveredNeighborIds = new Set();
-    let focusedNodeId = null;
-    let searchMatchIds = new Set();
 
     // =========================
     // DOM elements
@@ -442,6 +447,7 @@
     const detectBtn = document.getElementById('detect-btn');
     const cibBtn = document.getElementById('cib-btn');
     const canvas = document.getElementById('network-canvas');
+    const ctx = canvas.getContext('2d');
     const emptyState = document.getElementById('empty-state');
     const statsDiv = document.getElementById('stats');
     const nodeInfo = document.getElementById('node-info');
@@ -458,6 +464,8 @@
     const modalClose= document.getElementById('modal-close');
     const modalTitle= document.getElementById('modal-title');
     const modalBody = document.getElementById('modal-body');
+    const platformIndicator = document.getElementById('platform-indicator');
+    const renderingIndicator = document.getElementById('rendering-indicator');
 
     // =========================
     // UI constants
@@ -488,9 +496,28 @@
       try {
         const text = await file.text();
         const lines = text.trim().split('\n');
-        rawData = lines.map(line => JSON.parse(line));
+        const parsed = lines.map(line => JSON.parse(line));
+        
+        // Normalize data to handle both TikTok and Instagram
+        rawData = normalizeRawData(parsed);
 
-        // set date bounds from data (TikTok createTime seconds)
+        // Detect platforms
+        const platformCounts = {};
+        rawData.forEach(p => {
+          const platform = p.platform || 'unknown';
+          platformCounts[platform] = (platformCounts[platform] || 0) + 1;
+        });
+        
+        const platformParts = [];
+        if (platformCounts.tiktok) platformParts.push(`🎵 TikTok (${platformCounts.tiktok})`);
+        if (platformCounts.instagram) platformParts.push(`📷 Instagram (${platformCounts.instagram})`);
+        if (platformCounts.unknown) platformParts.push(`❓ Unknown (${platformCounts.unknown})`);
+        
+        const platformText = platformParts.join(' · ') || 'No data';
+        platformIndicator.textContent = `· ${platformText}`;
+        console.log(`Loaded ${rawData.length} posts from: ${platformText}`);
+
+        // set date bounds from data (both platforms use createTime after normalization)
         const dates = rawData.map(p => p.data?.createTime).filter(Boolean);
         if (dates.length > 0) {
           const minDate = new Date(Math.min(...dates) * 1000);
@@ -883,6 +910,96 @@
       return { nodes: Array.from(nodeMap.values()), links: [] };
     }
 
+    // Instagram-specific: Photo tag network
+    function extractPhotoTagNetwork(posts) {
+      const nodeMap = new Map();
+      const links = [];
+      
+      posts.forEach(post => {
+        if (post.platform !== 'instagram') return; // Only Instagram has photo tags
+        
+        const author = post.data?.author;
+        const usertags = post.data?._instagram?.usertags?.in || [];
+        
+        if (!author || usertags.length === 0) return;
+        
+        const authorId = `u_${author.id}`;
+        if (!nodeMap.has(authorId)) {
+          nodeMap.set(authorId, {
+            id: authorId,
+            label: author.uniqueId || author.nickname,
+            type: 'user',
+            verified: author.verified,
+            followers: 0
+          });
+        }
+        
+        // Create connections to tagged users
+        usertags.forEach(tag => {
+          const taggedUser = tag.user;
+          if (!taggedUser) return;
+          
+          const taggedId = `u_${taggedUser.id}`;
+          if (!nodeMap.has(taggedId)) {
+            nodeMap.set(taggedId, {
+              id: taggedId,
+              label: taggedUser.username,
+              type: 'user',
+              verified: taggedUser.is_verified || false,
+              followers: 0
+            });
+          }
+          
+          links.push({ source: authorId, target: taggedId, postId: post.item_id });
+        });
+      });
+      
+      return { nodes: Array.from(nodeMap.values()), links };
+    }
+
+    // Instagram-specific: Location network
+    function extractLocationNetwork(posts) {
+      const nodeMap = new Map();
+      const links = [];
+      
+      posts.forEach(post => {
+        if (post.platform !== 'instagram') return; // Only Instagram has location data
+        
+        const author = post.data?.author;
+        const location = post.data?._instagram?.location;
+        
+        if (!author || !location) return;
+        
+        const authorId = `u_${author.id}`;
+        if (!nodeMap.has(authorId)) {
+          nodeMap.set(authorId, {
+            id: authorId,
+            label: author.uniqueId || author.nickname,
+            type: 'user',
+            verified: author.verified,
+            followers: 0
+          });
+        }
+        
+        const locationId = `loc_${location.pk}`;
+        if (!nodeMap.has(locationId)) {
+          nodeMap.set(locationId, {
+            id: locationId,
+            label: location.name,
+            type: 'location',
+            count: 0,
+            lat: location.lat,
+            lng: location.lng
+          });
+        }
+        
+        nodeMap.get(locationId).count++;
+        links.push({ source: authorId, target: locationId, postId: post.item_id });
+      });
+      
+      return { nodes: Array.from(nodeMap.values()), links };
+    }
+
     // =========================
     // Metrics & communities
     // =========================
@@ -991,6 +1108,8 @@
           case 'coHashtag':   network = extractCoHashtagNetwork(filtered);   break;
           case 'userHashtag': network = extractUserHashtagNetwork(filtered); break;
           case 'hashtag':     network = extractHashtagNetwork(filtered);     break;
+          case 'photoTag':    network = extractPhotoTagNetwork(filtered);    break;
+          case 'location':    network = extractLocationNetwork(filtered);    break;
           default:            network = { nodes: [], links: [] };
         }
 
@@ -1028,41 +1147,68 @@
     }
 
     // =========================
-    // Cosmograph integration
+    // Layouts & drawing
     // =========================
-    function resizeCanvas() {
-      const rect = canvas.getBoundingClientRect();
-      const ratio = window.devicePixelRatio || 1;
-      canvas.width = Math.max(rect.width, 1) * ratio;
-      canvas.height = Math.max(rect.height, 1) * ratio;
+    function applyForceLayout() {
+      const centerX = canvas.width / 2, centerY = canvas.height / 2;
+      nodes.forEach(node => {
+        nodes.forEach(other => {
+          if (node === other) return;
+          const dx = node.x - other.x, dy = node.y - other.y;
+          const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+          const force = Math.min(1000 / (dist*dist), 10);
+          node.vx += (dx / dist) * force;
+          node.vy += (dy / dist) * force;
+        });
+        graphData.links.forEach(link => {
+          const source = nodes.find(n => n.id === link.source);
+          const target = nodes.find(n => n.id === link.target);
+          if (!source || !target) return;
+          if (node === source) {
+            const dx = target.x - source.x, dy = target.y - source.y;
+            const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+            const force = (dist - 150) * 0.05;
+            node.vx += (dx / dist) * force;
+            node.vy += (dy / dist) * force;
+          }
+        });
+        node.vx += (centerX - node.x) * 0.002;
+        node.vy += (centerY - node.y) * 0.002;
+        node.vx *= 0.85; node.vy *= 0.85;
+        node.x += node.vx; node.y += node.vy;
+        const margin = 30;
+        node.x = Math.max(margin, Math.min(canvas.width - margin, node.x));
+        node.y = Math.max(margin, Math.min(canvas.height - margin, node.y));
+      });
     }
 
-    const nodeColorAccessor = (node) => getNodeColor(node);
-    const nodeSizeAccessor = (node) => nodeSize(node);
-    const linkColorAccessor = (link) => getLinkColor(link);
-    const linkWidthAccessor = (link) => getLinkWidth(link);
-
-    function ensureCosmograph() {
-      if (cosmographInstance) return;
-      if (!window.Cosmos) {
-        console.error('Cosmograph engine not loaded');
+    function initializeVisualization() {
+      if (!graphData || graphData.nodes.length === 0) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
         return;
       }
-      resizeCanvas();
-      cosmographInstance = new Cosmos.Graph(canvas, {
-        backgroundColor: '#ffffff',
-        nodeColor: nodeColorAccessor,
-        nodeSize: nodeSizeAccessor,
-        renderLinks: true,
-        linkColor: linkColorAccessor,
-        linkWidth: linkWidthAccessor,
-        hoveredNodeRingColor: '#111827',
-        focusedNodeRingColor: '#111827',
-        onNodeMouseOver: handleNodeMouseOver,
-        onNodeMouseOut: handleNodeMouseOut,
-        onMouseMove: handleMouseMove,
-        onClick: handleNodeClick
-      });
+      canvas.width = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+
+      nodes = graphData.nodes.map(n => ({
+        ...n,
+        x: canvas.width/2 + (Math.random()-0.5)*100,
+        y: canvas.height/2 + (Math.random()-0.5)*100,
+        vx: 0, vy: 0
+      }));
+
+      startAnimation();
+    }
+
+    function startAnimation() {
+      if (animationFrame) cancelAnimationFrame(animationFrame);
+      let iteration = 0, maxIterations = 200;
+      function animate() {
+        if (iteration++ > maxIterations) return;
+        applyForceLayout(); drawNetwork();
+        animationFrame = requestAnimationFrame(animate);
+      }
+      animate();
     }
 
     function getNodeColor(node) {
@@ -1077,7 +1223,8 @@
         return communityColors[cid % communityColors.length];
       }
       if (node.type === 'user') return node.verified ? '#3b82f6' : '#8b5cf6';
-      return '#10b981';
+      if (node.type === 'location') return '#f59e0b'; // Orange for locations
+      return '#10b981'; // Green for hashtags
     }
 
     function nodeSize(node) {
@@ -1090,140 +1237,67 @@
           return Math.min(5 + Math.sqrt(degree) * 3, 30);
         }
         case 'followers':
-          if (node.type === 'user') {
-            return Math.min(5 + Math.log((node.followers || 0) + 1) * 1.5, 25);
+          if (n.type === 'user') {
+            return Math.min(5 + Math.log((n.followers || 0) + 1) * 1.5, 25);
+          } else {
+            return Math.min(5 + (n.count || 1) * 1.5, 25);
           }
-          return Math.min(5 + (node.count || 1) * 1.5, 25);
+        
         case 'uniform':
         default:
           return 8;
       }
     }
 
-    function linkEndpointId(value) {
-      if (value && typeof value === 'object') {
-        return value.id ?? value.source ?? value.target ?? value;
-      }
-      return value;
-    }
+    function drawNetwork() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    function getLinkColor(link) {
-      if (!link) return '#d1d5db';
-      const sourceId = linkEndpointId(link.source);
-      const targetId = linkEndpointId(link.target);
-      if (hoveredNodeId && (sourceId === hoveredNodeId || targetId === hoveredNodeId)) {
-        return '#f59e0b';
-      }
-      return '#d1d5db';
-    }
+      // edges
+      graphData.links.forEach(link => {
+        const s = nodes.find(n => n.id === link.source);
+        const t = nodes.find(n => n.id === link.target);
+        if (!s || !t) return;
+        const w = link.weight || 1;
+        ctx.lineWidth = Math.min(1 + w*0.5, 5);
+        ctx.strokeStyle = '#d1d5db';
+        ctx.globalAlpha = Math.min(0.3 + w*0.1, 0.8);
+        ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y); ctx.stroke();
+        ctx.globalAlpha = 1;
+      });
 
-    function getLinkWidth(link) {
-      if (!link) return 1;
-      const w = link.weight || 1;
-      return Math.min(1 + w * 0.5, 5);
-    }
+      // nodes
+      nodes.forEach(n => {
+        const r = nodeSize(n);
+        ctx.fillStyle = getNodeColor(n);
+        ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI*2); ctx.fill();
 
-    function refreshCosmographStyles() {
-      if (!cosmographInstance) return;
-      cosmographInstance.setConfig({
-        nodeColor: nodeColorAccessor,
-        nodeSize: nodeSizeAccessor,
-        linkColor: linkColorAccessor,
-        linkWidth: linkWidthAccessor,
-        hoveredNodeRingColor: '#111827',
-        focusedNodeRingColor: '#111827'
+        if (r > 12 || n.suspicious) {
+          ctx.strokeStyle = n.suspicious ? '#7f1d1d' : 'white';
+          ctx.lineWidth = n.suspicious ? 3 : 2; ctx.stroke();
+        }
+
+        if (r > 8) {
+          ctx.fillStyle = '#1f2937';
+          ctx.font = `${Math.min(r*0.8, 12)}px sans-serif`;
+          ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+          const label = (n.label || '').substring(0, 20);
+          ctx.fillText(label, n.x, n.y - r - 5);
+        }
       });
     }
 
-    function updateCosmographData() {
-      if (!cosmographInstance) ensureCosmograph();
-      if (!cosmographInstance) return;
-      if (!graphData || !graphData.nodes.length) {
-        cosmographInstance.setData([], []);
-        return;
+    // =========================
+    // Hover & Click UX
+    // =========================
+    function getNodeAt(x, y) {
+      if (!nodes?.length) return null;
+      let best = null, bestDist = Infinity;
+      for (const n of nodes) {
+        const r = nodeSize(n);
+        const d = Math.hypot(x - n.x, y - n.y);
+        if (d <= r && d < bestDist) { best = n; bestDist = d; }
       }
-      resizeCanvas();
-      cosmographInstance.setData(graphData.nodes, graphData.links);
-      cosmographInstance.fitView(250);
-      refreshCosmographStyles();
-    }
-
-    function handleNodeMouseOver(node, index, nodePosition, event) {
-      if (!node) return;
-      hoveredNode = node;
-      hoveredNodeId = node.id;
-      hoveredNeighborIds = new Set(adjacency.get(node.id) || []);
-      updateTooltipContent(node);
-      tooltipEl.style.display = 'block';
-      updateTooltipPosition(event, nodePosition);
-      cosmographInstance?.setFocusedNodeById(node.id);
-      refreshCosmographStyles();
-    }
-
-    function handleMouseMove(node, index, nodePosition, event) {
-      if (!hoveredNode) return;
-      updateTooltipPosition(event, nodePosition);
-    }
-
-    function handleNodeMouseOut() {
-      hoveredNode = null;
-      hoveredNodeId = null;
-      hoveredNeighborIds = new Set();
-      tooltipEl.style.display = 'none';
-      cosmographInstance?.setFocusedNodeById(focusedNodeId || undefined);
-      refreshCosmographStyles();
-    }
-
-    function handleNodeClick(node) {
-      if (!node) {
-        focusedNodeId = null;
-        cosmographInstance?.setFocusedNodeById(undefined);
-        return;
-      }
-      focusedNodeId = node.id;
-      cosmographInstance?.setFocusedNodeById(node.id);
-      showNodeInfo(node);
-      openNodeModal(node);
-      refreshCosmographStyles();
-    }
-
-    function updateTooltipContent(node) {
-      const deg = node.degree ?? 0;
-      const label = node.label ?? node.id;
-      const meta = (node.type === 'user')
-        ? `${node.verified ? 'Verified · ' : ''}${(node.followers || 0).toLocaleString()} followers`
-        : `${node.count || 0} posts`;
-      tooltipEl.innerHTML = `
-        <div style="font-weight:600">${node.type === 'user' ? '@' : ''}${label}</div>
-        <div style="opacity:.85">${node.type} · degree ${deg}${meta ? ' · ' + meta : ''}</div>
-      `;
-    }
-
-    function updateTooltipPosition(event, nodePosition) {
-      if (!tooltipEl) return;
-      const pad = 12;
-      let tx = 0;
-      let ty = 0;
-      if (event && typeof event.clientX === 'number' && typeof event.clientY === 'number') {
-        tx = event.clientX + pad;
-        ty = event.clientY + pad;
-      } else if (cosmographInstance && nodePosition) {
-        const [sx, sy] = cosmographInstance.spaceToScreenPosition(nodePosition);
-        const rect = canvas.getBoundingClientRect();
-        tx = rect.left + sx + pad;
-        ty = rect.top + sy + pad;
-      } else {
-        return;
-      }
-      tooltipEl.style.display = 'block';
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-      const width = tooltipEl.offsetWidth || 160;
-      const height = tooltipEl.offsetHeight || 60;
-      if (tx + width + pad > vw) tx = vw - width - pad;
-      if (ty + height + pad > vh) ty = vh - height - pad;
-      tooltipEl.style.left = `${tx}px`;
-      tooltipEl.style.top = `${ty}px`;
+      return best;
     }
 
     // =========================
@@ -1244,7 +1318,7 @@
       return (s.diggCount||0) + (s.commentCount||0) + (s.shareCount||0);
     }
 
-    function samplePostsForNode(node, limit=5) {
+    function getAllPostsForNode(node) {
       if (!filteredData?.length) return [];
       const out = [];
       if (node.type === 'user') {
@@ -1262,13 +1336,101 @@
           const hs = p?.data?.challenges || [];
           if (hs.some(h => String(h.id) === wantId || (h.title && h.title.toLowerCase() === wantLabel))) out.push(p);
         }
+      } else if (node.type === 'location') {
+        const wantId = (node.id + '').replace(/^loc_/,'');
+        const wantLabel = (node.label || '').toLowerCase();
+        for (const p of filteredData) {
+          const loc = p?.data?._instagram?.location;
+          if (loc && (String(loc.pk) === wantId || (loc.name && loc.name.toLowerCase() === wantLabel))) {
+            out.push(p);
+          }
+        }
       }
       out.sort((a,b)=>postEngagement(b)-postEngagement(a));
-      return out.slice(0, limit);
+      return out;
     }
 
+    function samplePostsForNode(node, limit=5) {
+      return getAllPostsForNode(node).slice(0, limit);
+    }
+
+    function highlightNeighbors(node) {
+      const nbs = adjacency.get(node.id) || new Set();
+      ctx.save(); ctx.globalAlpha = 0.15; ctx.fillStyle = '#fde68a';
+      for (const id of nbs) {
+        const nb = idToNode.get(id); if (!nb) continue;
+        ctx.beginPath(); ctx.arc(nb.x, nb.y, nodeSize(nb)+8, 0, Math.PI*2); ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    canvas.addEventListener('mousemove', (e) => {
+      if (!nodes?.length) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left, y = e.clientY - rect.top;
+
+      const n = getNodeAt(x, y);
+      if (n) {
+        hoveredNode = n;
+        canvas.classList.add('hovering');
+
+        // tooltip content
+        const deg = n.degree ?? 0;
+        const label = n.label ?? n.id;
+        const meta = (n.type==='user')
+          ? `${n.verified?'Verified · ':''}${(n.followers||0).toLocaleString()} followers`
+          : `${n.count||0} posts`;
+
+        tooltipEl.innerHTML =
+          `<div style="font-weight:600">${n.type==='user'?'@':''}${label}</div>
+           <div style="opacity:.85">${n.type} · degree ${deg}${meta ? ' · ' + meta : ''}</div>`;
+        tooltipEl.style.display = 'block';
+
+        // place tooltip
+        const pad = 12;
+        let tx = e.clientX + 12, ty = e.clientY + 12;
+        const vw = window.innerWidth, vh = window.innerHeight;
+        tooltipEl.style.left = tx + 'px'; tooltipEl.style.top = ty + 'px';
+        const tb = tooltipEl.getBoundingClientRect();
+        if (tx + tb.width + pad > vw) tooltipEl.style.left = (vw - tb.width - pad) + 'px';
+        if (ty + tb.height + pad > vh) tooltipEl.style.top  = (vh - tb.height - pad) + 'px';
+
+        // redraw with neighbor glow + ring
+        drawNetwork();
+        highlightNeighbors(n);
+        ctx.save(); ctx.strokeStyle = '#111827'; ctx.lineWidth = 2; ctx.globalAlpha = 0.6;
+        ctx.beginPath(); ctx.arc(n.x, n.y, nodeSize(n)+4, 0, Math.PI*2); ctx.stroke(); ctx.restore();
+      } else {
+        hoveredNode = null;
+        canvas.classList.remove('hovering');
+        tooltipEl.style.display = 'none';
+        drawNetwork();
+      }
+    });
+
+    canvas.addEventListener('click', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left, y = e.clientY - rect.top;
+
+      let clicked = null, minDist = Infinity;
+      nodes.forEach(n => {
+        const r = nodeSize(n);
+        const d = Math.hypot(x - n.x, y - n.y);
+        if (d < r && d < minDist) { clicked = n; minDist = d; }
+      });
+
+      if (clicked) {
+        showNodeInfo(clicked);   // keep sidebar
+        openNodeModal(clicked);  // new rich modal
+      }
+    });
+
     function openNodeModal(node) {
-      modalTitle.textContent = `${node.type==='user'?'@':'#'}${node.label || node.id}`;
+      let prefix = '';
+      if (node.type === 'user') prefix = '@';
+      else if (node.type === 'hashtag') prefix = '#';
+      else if (node.type === 'location') prefix = '📍';
+      modalTitle.textContent = `${prefix}${node.label || node.id}`;
 
       const nbs = Array.from(adjacency.get(node.id) || []);
       const neighborHTML = nbs.slice(0, 14).map(id => {
@@ -1276,16 +1438,44 @@
         return `<code style="background:#f3f4f6; padding:.15rem .35rem; border-radius:6px; margin:.12rem; display:inline-block;">${lab}</code>`;
       }).join('');
 
-      const samples = samplePostsForNode(node, 6).map(p => {
+      // Get all posts for hashtag and location nodes, sample for user nodes
+      const posts = (node.type === 'hashtag' || node.type === 'location') ? getAllPostsForNode(node) : samplePostsForNode(node, 6);
+      const postsHTML = posts.map(p => {
         const a = p?.data?.author || {};
-        const u = a?.uniqueId ? `https://www.tiktok.com/@${a.uniqueId}` : null;
-        const cap = (p?.data?.desc || '').slice(0, 220).replace(/</g,'&lt;');
+        const platform = p.platform || 'unknown';
+        
+        // Platform-specific URLs and icons
+        let profileUrl, postUrl, platformIcon;
+        if (platform === 'instagram') {
+          profileUrl = a?.uniqueId ? `https://www.instagram.com/${a.uniqueId}` : null;
+          const postCode = p.data?.code || p.data?.pk;
+          postUrl = postCode ? `https://www.instagram.com/p/${postCode}` : null;
+          platformIcon = '📷';
+        } else if (platform === 'tiktok') {
+          profileUrl = a?.uniqueId ? `https://www.tiktok.com/@${a.uniqueId}` : null;
+          postUrl = p?.data?.webVideoUrl || p?.data?.shareUrl || null;
+          platformIcon = '🎵';
+        } else {
+          profileUrl = null;
+          postUrl = null;
+          platformIcon = '❓';
+        }
+        
+        const cap = (p?.data?.desc || '').slice(0, 220).replace(/</g,'<');
         const eng = postEngagement(p);
-        const t   = p?.data?.createTime ? new Date(p.data.createTime*1000).toLocaleString() : '';
+        const t = p?.data?.createTime ? new Date(p.data.createTime*1000).toLocaleString() : '';
+        
+        // Instagram-specific: location
+        const location = p?.data?._instagram?.location;
+        const locationText = location ? ` · 📍 ${location.name}` : '';
+        
         return `<div style="padding:.6rem .6rem; border:1px solid #eee; border-radius:8px; margin:.45rem 0;">
-          <div style="font-weight:600">${a.uniqueId ? '@'+a.uniqueId : '(unknown user)'} ${u?` · <a href="${u}" target="_blank" rel="noopener">profile</a>`:''}</div>
+          <div style="font-weight:600">${platformIcon} ${a.uniqueId ? '@'+a.uniqueId : '(unknown user)'} 
+            ${profileUrl?` · <a href="${profileUrl}" target="_blank" rel="noopener" style="color:#2563eb; text-decoration:none;">profile</a>`:''}
+            ${postUrl ? ` · <a href="${postUrl}" target="_blank" rel="noopener" style="color:#059669; text-decoration:none;">view post</a>`:''}
+          </div>
           <div style="opacity:.95">${cap}${cap.length===220?'…':''}</div>
-          <div style="opacity:.7; margin-top:.2rem">time: ${t} · engagement: ${eng.toLocaleString()}</div>
+          <div style="opacity:.7; margin-top:.2rem">time: ${t} · engagement: ${eng.toLocaleString()}${locationText}</div>
         </div>`;
       }).join('');
 
@@ -1296,6 +1486,14 @@
         return `Mid-degree ${node.type}. Check neighbors and example posts to see whether it bridges topics or audiences.`;
       })();
 
+      const postsSectionTitle = (node.type === 'hashtag' || node.type === 'location')
+        ? `All posts (${posts.length})` 
+        : `Example posts (${posts.length})`;
+
+      const postsContainerStyle = (node.type === 'hashtag' || node.type === 'location') 
+        ? `max-height:300px; overflow-y:auto; border:1px solid #e5e7eb; border-radius:8px; padding:.5rem; background:#fafafa;`
+        : '';
+
       modalBody.innerHTML = `
         <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px; margin-bottom:8px;">
           <div><div class="small" style="color:#6b7280;">Type</div><div><b>${node.type}</b></div></div>
@@ -1303,6 +1501,9 @@
           ${node.type==='user'
             ? `<div><div class="small" style="color:#6b7280;">Followers</div><div><b>${(node.followers||0).toLocaleString()}</b></div></div>
                <div><div class="small" style="color:#6b7280;">Verified</div><div><b>${node.verified? 'Yes':'No'}</b></div></div>`
+            : node.type==='location'
+            ? `<div><div class="small" style="color:#6b7280;">Posts at location</div><div><b>${node.count||0}</b></div></div>
+               <div><div class="small" style="color:#6b7280;">Coordinates</div><div><b>${node.lat?.toFixed(4) || '?'}, ${node.lng?.toFixed(4) || '?'}</b></div></div>`
             : `<div><div class="small" style="color:#6b7280;">Usage count</div><div><b>${node.count||0}</b></div></div><div></div>`}
         </div>
 
@@ -1324,8 +1525,12 @@
         <div style="margin:.6rem 0 .25rem; font-weight:700;">Neighbors (${nbs.length})</div>
         <div>${neighborHTML || '<span class="small" style="color:#6b7280;">No neighbors</span>'}</div>
 
-        <div style="margin:.9rem 0 .35rem; font-weight:700;">Example posts</div>
-        ${samples || '<div class="small" style="color:#6b7280;">No sample posts found for this node given current filters.</div>'}
+        <div style="margin:.9rem 0 .35rem; font-weight:700;">${postsSectionTitle}</div>
+        <div style="${postsContainerStyle}">
+          ${postsHTML || '<div class="small" style="color:#6b7280;">No posts found for this node given current filters.</div>'}
+        </div>
+        ${(node.type === 'hashtag' || node.type === 'location') && posts.length > 0 ? 
+          `<div class="small" style="color:#6b7280; margin-top:.25rem; text-align:center;">Scroll to see all ${posts.length} posts</div>` : ''}
       `;
       modalEl.style.display = 'flex';
     }
@@ -1407,22 +1612,11 @@
 
     searchInput.addEventListener('input', (e) => {
       const term = e.target.value.toLowerCase();
-      if (!graphData?.nodes?.length) {
-        searchMatchIds.clear();
-        refreshCosmographStyles();
-        return;
-      }
-      if (!term) {
-        searchMatchIds.clear();
-        refreshCosmographStyles();
-        return;
-      }
-      searchMatchIds = new Set(
-        graphData.nodes
-          .filter(n => (n.label || '').toLowerCase().includes(term))
-          .map(n => n.id)
-      );
-      refreshCosmographStyles();
+      if (!term || !nodes.length) { drawNetwork(); return; }
+      drawNetwork();
+      const matches = nodes.filter(n => (n.label || '').toLowerCase().includes(term));
+      ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 3;
+      matches.forEach(n => { const r = nodeSize(n); ctx.beginPath(); ctx.arc(n.x, n.y, r+3, 0, Math.PI*2); ctx.stroke(); });
     });
 
     window.addEventListener('resize', () => {
@@ -1439,19 +1633,24 @@
     function updateCoach() {
       const coach = document.getElementById('edu-coach');
       if (!graphData || !graphData.nodes.length) {
-        coach.innerHTML = `<p><b>You:</b> load data, then hover or click nodes.</p>`;
+        coach.innerHTML = `<p><b>Guillen</b> load data, then hover or click nodes.</p>`;
         return;
       }
       const dens = networkMetrics?.density ?? 0;
       const commCount = communities?.count ?? 0;
 
       let hint = '';
-      if (networkTypeSelect.value === 'coHashtag') {
-        hint = `You’re looking at hashtag co-occurrence. Dense cliques can reflect coordinated messaging or just memes — check example posts in the modal.`;
-      } else if (networkTypeSelect.value === 'userHashtag') {
+      const networkType = networkTypeSelect.value;
+      if (networkType === 'coHashtag') {
+        hint = `You're looking at hashtag co-occurrence. Dense cliques can reflect coordinated messaging or just memes — check example posts in the modal.`;
+      } else if (networkType === 'userHashtag') {
         hint = `This is a bipartite user↔hashtag graph. Click a hashtag hub: who uses it? One community or many?`;
-      } else if (networkTypeSelect.value === 'mention') {
+      } else if (networkType === 'mention') {
         hint = `Mention networks highlight attention-giving. Are hubs amplifying each other, or bridging clusters?`;
+      } else if (networkType === 'photoTag') {
+        hint = `📷 Instagram photo tag network: see who tags whom in photos. This reveals collaboration and relationship patterns.`;
+      } else if (networkType === 'location') {
+        hint = `📍 Instagram location network: where are users posting from? Shared locations can indicate coordinated campaigns or events.`;
       } else {
         hint = `Hashtag usage view shows which tags carry engagement; hubs suggest narrative anchors.`;
       }
@@ -1465,7 +1664,7 @@
         : `Run “Detect Communities” to see sub-audiences.`;
 
       coach.innerHTML = `
-        <p><b>Coach:</b> ${hint}</p>
+        <p><b>Guillen:</b> ${hint}</p>
         <p>${densNote}</p>
         <p>${commNote}</p>
       `;
