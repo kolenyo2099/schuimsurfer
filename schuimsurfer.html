@@ -408,7 +408,6 @@
     <div class="loading-text" id="loading-text">Processing...</div>
   </div>
 
-  <script src="./vendor/cosmos/dist/index.min.js"></script>
   <script>
     // =========================
     // Global state
@@ -416,17 +415,111 @@
     let rawData = [];
     let filteredData = [];
     let graphData = null;
+    let nodes = [];
     let communities = null;
     let cibDetection = null;
+    let animationFrame = null;
     let networkMetrics = null;
 
     // Expose nodes globally for WebGL renderer access
     window.nodes = nodes;
 
     // Hover & modal helpers / indexes
-    let idToNode = new Map();     // node.id -> node (with attributes)
+    let idToNode = new Map();     // node.id -> node (with x,y)
     let adjacency = new Map();    // node.id -> Set(neighborIds)
     let hoveredNode = null;
+
+    // =========================
+    // Platform Detection & Normalization
+    // =========================
+    function detectPlatform(post) {
+      const platform = post.source_platform || '';
+      if (platform.includes('instagram')) return 'instagram';
+      if (platform.includes('tiktok')) return 'tiktok';
+      return 'unknown';
+    }
+
+    // Extract hashtags from text (for Instagram)
+    function extractHashtagsFromText(text) {
+      if (!text) return [];
+      const matches = text.match(/#(\w+)/g) || [];
+      return matches.map((tag, idx) => ({
+        id: `ig_${tag.substring(1)}_${idx}`, // unique ID for each hashtag
+        title: tag.substring(1) // remove the #
+      }));
+    }
+
+    // Extract mentions from text (for Instagram)
+    function extractMentionsFromText(text) {
+      if (!text) return [];
+      const matches = text.match(/@(\w+)/g) || [];
+      return matches.map(mention => ({
+        username: mention.substring(1) // remove the @
+      }));
+    }
+
+    // Normalize post data across platforms
+    function normalizePost(post) {
+      const platform = detectPlatform(post);
+      const normalized = { ...post, platform };
+
+      if (platform === 'instagram') {
+        // Normalize Instagram data to TikTok-like structure
+        const ig = post.data;
+        const owner = ig.owner || ig.user || {};
+        const caption = ig.caption?.text || '';
+        
+        normalized.data = {
+          ...ig,
+          // Author info
+          author: {
+            id: owner.pk || owner.id,
+            uniqueId: owner.username,
+            nickname: owner.full_name || owner.username,
+            verified: owner.is_verified || false
+          },
+          // Timestamp
+          createTime: ig.taken_at,
+          // Caption
+          desc: caption,
+          // Extract hashtags from caption
+          challenges: extractHashtagsFromText(caption),
+          // Extract mentions from caption
+          textExtra: extractMentionsFromText(caption).map(m => ({
+            type: 0,
+            userUniqueId: m.username,
+            userId: null // Instagram doesn't provide user IDs in mentions
+          })),
+          // Engagement stats
+          stats: {
+            diggCount: ig.like_count || 0,
+            commentCount: ig.comment_count || 0,
+            shareCount: 0, // Instagram doesn't expose share count
+            playCount: ig.view_count || 0
+          },
+          // Author stats (not available in Instagram post data)
+          authorStats: {
+            followerCount: 0
+          },
+          // Keep Instagram-specific fields
+          _instagram: {
+            location: ig.location,
+            usertags: ig.usertags,
+            carousel_media: ig.carousel_media
+          }
+        };
+      } else if (platform === 'tiktok') {
+        // TikTok data is already in the right format, just mark platform
+        normalized.data = { ...post.data };
+      }
+
+      return normalized;
+    }
+
+    // Normalize all raw data on load
+    function normalizeRawData(data) {
+      return data.map(post => normalizePost(post));
+    }
 
     // =========================
     // DOM elements
@@ -447,7 +540,9 @@
     const detectBtn = document.getElementById('detect-btn');
     const cibBtn = document.getElementById('cib-btn');
     const canvas = document.getElementById('network-canvas');
-    const ctx = canvas.getContext('2d');
+    let ctx = null; // Don't create context yet - let renderer decide
+    let gl = null;
+    let gpuRenderer = null;
     const emptyState = document.getElementById('empty-state');
     const statsDiv = document.getElementById('stats');
     const nodeInfo = document.getElementById('node-info');
@@ -777,17 +872,16 @@
         displayCIBResults(results);
 
         // mark nodes
-        if (graphData?.nodes?.length) {
-          graphData.nodes.forEach(node => {
+        if (nodes.length > 0) {
+          nodes.forEach(node => {
             const plainId = node.id.replace(/^u_/,'');
             if (results.suspiciousUsers.has(node.id) || results.suspiciousUsers.has(plainId)) {
               node.suspicious = true;
               node.cibScore = results.userScores.get(node.id) || results.userScores.get(plainId) || 0;
               node.cibReasons = results.userReasons.get(node.id) || results.userReasons.get(plainId) || [];
             }
-            idToNode.set(node.id, node);
           });
-          refreshCosmographStyles();
+          drawNetwork();
         }
         document.getElementById('stat-suspicious').textContent = results.suspiciousUsers.size;
 
@@ -1132,22 +1226,623 @@
         buildAdjacency(graphData);
         idToNode = new Map(graphData.nodes.map(n => [n.id, n]));
 
-        hoveredNode = null;
-        hoveredNodeId = null;
-        hoveredNeighborIds = new Set();
-        focusedNodeId = null;
-        searchMatchIds.clear();
-        cosmographInstance?.setFocusedNodeById(undefined);
-        tooltipEl.style.display = 'none';
-
-        updateCosmographData();
+        initializeVisualization();
         loading.classList.remove('active');
         updateCoach();
       }, 100);
     }
 
     // =========================
-    // Layouts & drawing
+    // GPU Renderer (WebGL)
+    // =========================
+    class GPUNetworkRenderer {
+      constructor(canvas) {
+        this.canvas = canvas;
+        this.gl = null;
+        this.edgeProgram = null;
+        this.nodeProgram = null;
+        this.edgeBuffers = null;
+        this.nodeBuffers = null;
+        this.textRenderer = null;
+        this.initialized = false;
+        
+        this.initWebGL();
+      }
+
+      initWebGL() {
+        console.log('=== WebGL Context Creation Diagnostics ===');
+        console.log('Canvas element:', this.canvas);
+        console.log('Canvas dimensions:', {
+          width: this.canvas.width,
+          height: this.canvas.height,
+          offsetWidth: this.canvas.offsetWidth,
+          offsetHeight: this.canvas.offsetHeight
+        });
+        
+        try {
+          // ✅ CRITICAL CHECK: Does canvas already have a NON-WebGL context?
+          // IMPORTANT: Do NOT call getContext('2d') here — that would CREATE a 2D context.
+          if (this.canvas.__ctxType && this.canvas.__ctxType !== 'webgl' && this.canvas.__ctxType !== 'webgl2') {
+            console.error('❌ FATAL ERROR: Canvas already initialized with a non-WebGL context (' + this.canvas.__ctxType + ')');
+            console.error('❌ Cannot create WebGL context on a canvas with an existing non-WebGL context');
+            return false;
+          }
+          
+          // CRITICAL FIX: Store and completely reset canvas state
+          const computedStyle = window.getComputedStyle(this.canvas);
+          const originalDisplay = computedStyle.display;
+          const originalPosition = computedStyle.position;
+          const originalVisibility = computedStyle.visibility;
+          const originalTransform = computedStyle.transform;
+          const originalOpacity = computedStyle.opacity;
+          
+          // CRITICAL FIX: Ensure canvas has proper dimensions BEFORE context creation
+          const rect = this.canvas.getBoundingClientRect();
+          if (this.canvas.width === 0 || this.canvas.height === 0) {
+            console.log('❌ CRITICAL ISSUE: Canvas has zero dimensions - fixing...');
+            this.canvas.width = Math.max(rect.width || this.canvas.offsetWidth || 800, 1);
+            this.canvas.height = Math.max(rect.height || this.canvas.offsetHeight || 600, 1);
+            console.log('✅ Fixed canvas dimensions:', {
+              width: this.canvas.width,
+              height: this.canvas.height
+            });
+          }
+          
+          // CRITICAL FIX: Temporarily remove any CSS that might interfere with WebGL
+          // This is the key fix - CSS transforms and certain positioning can break WebGL
+          this.canvas.style.setProperty('transform', 'none', 'important');
+          this.canvas.style.setProperty('opacity', '1', 'important');
+          this.canvas.style.setProperty('visibility', 'visible', 'important');
+          this.canvas.style.setProperty('display', 'block', 'important');
+          this.canvas.style.setProperty('position', 'static', 'important');
+          this.canvas.style.setProperty('will-change', 'auto', 'important');
+          this.canvas.style.setProperty('contain', 'none', 'important');
+          
+          // Force a reflow to apply the style changes
+          this.canvas.offsetHeight;
+          
+          console.log('🔍 Testing WebGL with cleaned canvas state...');
+          
+          // CRITICAL FIX: Try WebGL context creation with optimal settings
+          const contextAttributes = {
+            alpha: false,
+            antialias: true,
+            depth: false,
+            stencil: false,
+            preserveDrawingBuffer: false,
+            premultipliedAlpha: false,
+            powerPreference: 'high-performance',
+            failIfMajorPerformanceCaveat: false
+          };
+          
+          // Try WebGL 2 first (better performance), then WebGL 1
+          this.gl = this.canvas.getContext('webgl2', contextAttributes) ||
+                    this.canvas.getContext('webgl', contextAttributes) ||
+                    this.canvas.getContext('experimental-webgl', contextAttributes);
+          
+          if (!this.gl) {
+            console.error('❌ WebGL context creation failed');
+            console.error('❌ Possible causes:');
+            console.error('   1. Browser extensions blocking WebGL (privacy/ad blockers)');
+            console.error('   2. Hardware acceleration disabled in browser settings');
+            console.error('   3. GPU blacklisted or unsupported');
+            console.error('   4. Canvas already has a different context type');
+            console.error('');
+            console.error('💡 Try:');
+            console.error('   - Open in incognito/private mode');
+            console.error('   - Disable browser extensions temporarily');
+            console.error('   - Check browser hardware acceleration settings');
+            
+            // Show user-friendly notification
+            this.showWebGLDisabledNotification();
+            console.warn('WebGL not supported, falling back to CPU rendering');
+            return false;
+          }
+          
+          // Tag the canvas so future checks don't probe/instantiate other contexts
+          this.canvas.__ctxType = (this.gl.getParameter(this.gl.VERSION).indexOf('WebGL 2') !== -1) ? 'webgl2' : 'webgl';
+          
+          console.log('✅ WebGL context created successfully');
+          console.log('WebGL context type:', this.gl.constructor.name);
+          
+          // CRITICAL FIX: Test if context is actually functional
+          try {
+            const gl = this.gl;
+            gl.clearColor(1.0, 1.0, 1.0, 1.0);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            
+            // Test basic drawing setup
+            gl.enable(gl.BLEND);
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+            
+            console.log('✅ WebGL context is functional');
+            
+            // Log WebGL capabilities
+            console.log('WebGL Version:', gl.getParameter(gl.VERSION));
+            console.log('WebGL Vendor:', gl.getParameter(gl.VENDOR));
+            console.log('WebGL Renderer:', gl.getParameter(gl.RENDERER));
+            
+            // Create shaders and buffers
+            console.log('Creating WebGL shaders and buffers...');
+            const shadersCreated = this.createShaders();
+            const buffersCreated = this.createBuffers();
+            
+            console.log('Shader creation result:', shadersCreated);
+            console.log('Buffer creation result:', buffersCreated);
+            
+            if (shadersCreated && buffersCreated) {
+              this.initialized = true;
+              console.log('✅ WebGL renderer fully initialized');
+              
+              // CRITICAL FIX: Don't restore canvas styles that could break WebGL
+              // Keep the canvas in the clean state needed for WebGL
+              this.canvas.style.setProperty('transform', 'none', 'important');
+              this.canvas.style.setProperty('opacity', '1', 'important');
+              this.canvas.style.setProperty('visibility', 'visible', 'important');
+              this.canvas.style.setProperty('display', 'block', 'important');
+              this.canvas.style.setProperty('position', 'static', 'important');
+              
+              return true;
+            } else {
+              console.error('❌ Failed to create shaders or buffers');
+              return false;
+            }
+          } catch (glError) {
+            console.error('❌ WebGL context is not functional:', glError);
+            console.error('❌ Context created but drawing operations fail');
+            return false;
+          }
+        } catch (error) {
+          console.error('❌ WebGL initialization threw exception:', error);
+          console.error('Error details:', {
+            name: error.name,
+            message: error.message,
+            stack: error.stack
+          });
+          return false;
+        }
+      }
+
+      showWebGLDisabledNotification() {
+        // Create a user-friendly notification
+        const notification = document.createElement('div');
+        notification.style.cssText = `
+          position: fixed;
+          top: 20px;
+          right: 20px;
+          background: #dc2626;
+          color: white;
+          padding: 12px 16px;
+          border-radius: 8px;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+          font-size: 14px;
+          z-index: 10000;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+          max-width: 400px;
+          line-height: 1.4;
+        `;
+        notification.innerHTML = `
+          <div style="font-weight: 600; margin-bottom: 8px;">⚠️ WebGL Disabled</div>
+          <div style="font-size: 12px; margin-bottom: 8px;">Browser extensions or security policies are blocking WebGL.</div>
+          <div style="font-size: 11px; opacity: 0.9;">Try disabling extensions or using incognito mode.</div>
+        `;
+        
+        document.body.appendChild(notification);
+        
+        // Auto-remove after 8 seconds
+        setTimeout(() => {
+          if (notification.parentNode) {
+            notification.parentNode.removeChild(notification);
+          }
+        }, 8000);
+        
+        // Click to dismiss
+        notification.addEventListener('click', () => {
+          if (notification.parentNode) {
+            notification.parentNode.removeChild(notification);
+          }
+        });
+      }
+
+      createShaders() {
+        const gl = this.gl;
+        
+        // Edge shader - draws lines between nodes
+        const edgeVertexSource = `
+          attribute vec2 a_position;
+          attribute vec3 a_color;
+          attribute float a_alpha;
+          uniform vec2 u_resolution;
+          varying vec3 v_color;
+          varying float v_alpha;
+          
+          void main() {
+            vec2 clipSpace = ((a_position / u_resolution) * 2.0) - 1.0;
+            gl_Position = vec4(clipSpace * vec2(1, -1), 0, 1);
+            v_color = a_color;
+            v_alpha = a_alpha;
+          }
+        `;
+        
+        const edgeFragmentSource = `
+          precision mediump float;
+          varying vec3 v_color;
+          varying float v_alpha;
+          
+          void main() {
+            gl_FragColor = vec4(v_color, v_alpha);
+          }
+        `;
+        
+        // Node shader - draws circles for nodes
+        const nodeVertexSource = `
+          attribute vec2 a_position;
+          attribute vec3 a_color;
+          attribute float a_radius;
+          attribute float a_borderWidth;
+          attribute vec3 a_borderColor;
+          uniform vec2 u_resolution;
+          varying vec3 v_color;
+          varying float v_radius;
+          varying float v_borderWidth;
+          varying vec3 v_borderColor;
+          
+          void main() {
+            vec2 clipSpace = ((a_position / u_resolution) * 2.0) - 1.0;
+            gl_Position = vec4(clipSpace * vec2(1, -1), 0, 1);
+            v_color = a_color;
+            v_radius = a_radius;
+            v_borderWidth = a_borderWidth;
+            v_borderColor = a_borderColor;
+            gl_PointSize = a_radius * 2.0 + a_borderWidth * 2.0;
+          }
+        `;
+        
+        const nodeFragmentSource = `
+          precision mediump float;
+          varying vec3 v_color;
+          varying float v_radius;
+          varying float v_borderWidth;
+          varying vec3 v_borderColor;
+          
+          void main() {
+            vec2 coord = gl_PointCoord - vec2(0.5);
+            float dist = length(coord);
+            
+            if (dist > 0.5) {
+              discard;
+            }
+            
+            float totalRadius = v_radius + v_borderWidth;
+            float normalizedDist = dist * 2.0; // 0 at center, 1 at edge
+            
+            if (v_borderWidth > 0.0 && normalizedDist > (v_radius / totalRadius)) {
+              gl_FragColor = vec4(v_borderColor, 1.0);
+            } else {
+              gl_FragColor = vec4(v_color, 1.0);
+            }
+          }
+        `;
+        
+        this.edgeProgram = this.createProgram(edgeVertexSource, edgeFragmentSource);
+        this.nodeProgram = this.createProgram(nodeVertexSource, nodeFragmentSource);
+        
+        // Return true if both programs were created successfully
+        return !!(this.edgeProgram && this.nodeProgram);
+      }
+
+      createProgram(vertexSource, fragmentSource) {
+        const gl = this.gl;
+        const vertexShader = this.createShader(gl.VERTEX_SHADER, vertexSource);
+        const fragmentShader = this.createShader(gl.FRAGMENT_SHADER, fragmentSource);
+        
+        const program = gl.createProgram();
+        gl.attachShader(program, vertexShader);
+        gl.attachShader(program, fragmentShader);
+        gl.linkProgram(program);
+        
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+          console.error('Program link failed:', gl.getProgramInfoLog(program));
+          return null;
+        }
+        
+        return program;
+      }
+
+      createShader(type, source) {
+        const gl = this.gl;
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+        
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+          console.error('Shader compile failed:', gl.getShaderInfoLog(shader));
+          gl.deleteShader(shader);
+          return null;
+        }
+        
+        return shader;
+      }
+
+      createBuffers() {
+        const gl = this.gl;
+        
+        try {
+          // Edge buffers
+          this.edgeBuffers = {
+            position: gl.createBuffer(),
+            color: gl.createBuffer(),
+            alpha: gl.createBuffer()
+          };
+          
+          // Node buffers
+          this.nodeBuffers = {
+            position: gl.createBuffer(),
+            color: gl.createBuffer(),
+            radius: gl.createBuffer(),
+            borderWidth: gl.createBuffer(),
+            borderColor: gl.createBuffer()
+          };
+          
+          // Check if all buffers were created successfully
+          const edgeBuffersValid = this.edgeBuffers.position && this.edgeBuffers.color && this.edgeBuffers.alpha;
+          const nodeBuffersValid = this.nodeBuffers.position && this.nodeBuffers.color && 
+                                 this.nodeBuffers.radius && this.nodeBuffers.borderWidth && this.nodeBuffers.borderColor;
+          
+          return !!(edgeBuffersValid && nodeBuffersValid);
+        } catch (error) {
+          console.error('Buffer creation failed:', error);
+          return false;
+        }
+      }
+
+      hexToRgb(hex) {
+        const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+        return result ? [
+          parseInt(result[1], 16) / 255,
+          parseInt(result[2], 16) / 255,
+          parseInt(result[3], 16) / 255
+        ] : [0.5, 0.5, 0.5];
+      }
+
+      render(nodes, edges, width, height) {
+        if (!this.initialized) return false;
+        
+        const gl = this.gl;
+        gl.viewport(0, 0, width, height);
+        gl.clearColor(1, 1, 1, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        
+        this.renderEdges(edges, width, height);
+        this.renderNodes(nodes, width, height);
+        
+        return true;
+      }
+
+      renderEdges(edges, width, height) {
+        if (edges.length === 0) return;
+        
+        const gl = this.gl;
+        gl.useProgram(this.edgeProgram);
+        
+        // Prepare edge data
+        const positions = [];
+        const colors = [];
+        const alphas = [];
+        
+        edges.forEach(edge => {
+          if (!edge.source || !edge.target) return;
+          
+          const source = window.nodes.find(n => n.id === edge.source);
+          const target = window.nodes.find(n => n.id === edge.target);
+          if (!source || !target) return;
+          
+          // Create line segment
+          positions.push(source.x, source.y, target.x, target.y);
+          
+          const weight = edge.weight || 1;
+          const alpha = Math.min(0.3 + weight * 0.1, 0.8);
+          const color = this.hexToRgb('#d1d5db');
+          
+          colors.push(...color, ...color);
+          alphas.push(alpha, alpha);
+        });
+        
+        if (positions.length === 0) return;
+        
+        // Set uniforms
+        const resolutionLocation = gl.getUniformLocation(this.edgeProgram, 'u_resolution');
+        if (resolutionLocation) {
+          gl.uniform2f(resolutionLocation, width, height);
+        }
+        
+        // Set attributes
+        const positionLocation = gl.getAttribLocation(this.edgeProgram, 'a_position');
+        if (positionLocation >= 0) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, this.edgeBuffers.position);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(positionLocation);
+          gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+        }
+        
+        const colorLocation = gl.getAttribLocation(this.edgeProgram, 'a_color');
+        if (colorLocation >= 0) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, this.edgeBuffers.color);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(colorLocation);
+          gl.vertexAttribPointer(colorLocation, 3, gl.FLOAT, false, 0, 0);
+        }
+        
+        const alphaLocation = gl.getAttribLocation(this.edgeProgram, 'a_alpha');
+        if (alphaLocation >= 0) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, this.edgeBuffers.alpha);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(alphas), gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(alphaLocation);
+          gl.vertexAttribPointer(alphaLocation, 1, gl.FLOAT, false, 0, 0);
+        }
+        
+        // Draw edges as lines
+        gl.drawArrays(gl.LINES, 0, positions.length / 2);
+      }
+
+      renderNodes(nodes, width, height) {
+        if (nodes.length === 0) return;
+        
+        const gl = this.gl;
+        gl.useProgram(this.nodeProgram);
+        
+        // Prepare node data
+        const positions = [];
+        const colors = [];
+        const radii = [];
+        const borderWidths = [];
+        const borderColors = [];
+        
+        nodes.forEach(node => {
+          positions.push(node.x, node.y);
+          
+          const color = this.hexToRgb(getNodeColor(node));
+          colors.push(...color);
+          
+          const radius = nodeSize(node);
+          radii.push(radius);
+          
+          // Border styling
+          if (node.suspicious) {
+            borderWidths.push(3);
+            borderColors.push(...this.hexToRgb('#7f1d1d'));
+          } else if (radius > 12) {
+            borderWidths.push(2);
+            borderColors.push(...this.hexToRgb('#ffffff'));
+          } else {
+            borderWidths.push(0);
+            borderColors.push(...color);
+          }
+        });
+        
+        // Set uniforms
+        const resolutionLocation = gl.getUniformLocation(this.nodeProgram, 'u_resolution');
+        if (resolutionLocation) {
+          gl.uniform2f(resolutionLocation, width, height);
+        }
+        
+        // Set attributes manually with proper error checking
+        const positionLocation = gl.getAttribLocation(this.nodeProgram, 'a_position');
+        if (positionLocation >= 0) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, this.nodeBuffers.position);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(positionLocation);
+          gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+        }
+        
+        const colorLocation = gl.getAttribLocation(this.nodeProgram, 'a_color');
+        if (colorLocation >= 0) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, this.nodeBuffers.color);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(colors), gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(colorLocation);
+          gl.vertexAttribPointer(colorLocation, 3, gl.FLOAT, false, 0, 0);
+        }
+        
+        const radiusLocation = gl.getAttribLocation(this.nodeProgram, 'a_radius');
+        if (radiusLocation >= 0) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, this.nodeBuffers.radius);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(radii), gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(radiusLocation);
+          gl.vertexAttribPointer(radiusLocation, 1, gl.FLOAT, false, 0, 0);
+        }
+        
+        const borderWidthLocation = gl.getAttribLocation(this.nodeProgram, 'a_borderWidth');
+        if (borderWidthLocation >= 0) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, this.nodeBuffers.borderWidth);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(borderWidths), gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(borderWidthLocation);
+          gl.vertexAttribPointer(borderWidthLocation, 1, gl.FLOAT, false, 0, 0);
+        }
+        
+        const borderColorLocation = gl.getAttribLocation(this.nodeProgram, 'a_borderColor');
+        if (borderColorLocation >= 0) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, this.nodeBuffers.borderColor);
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(borderColors), gl.STATIC_DRAW);
+          gl.enableVertexAttribArray(borderColorLocation);
+          gl.vertexAttribPointer(borderColorLocation, 3, gl.FLOAT, false, 0, 0);
+        }
+        
+        // Draw nodes as points
+        gl.drawArrays(gl.POINTS, 0, nodes.length);
+      }
+
+      setAttribute(program, name, data, size) {
+        const gl = this.gl;
+        const location = gl.getAttribLocation(program, name);
+        const buffer = name.includes('position') ? this.nodeBuffers.position :
+                       name.includes('color') ? this.nodeBuffers.color :
+                       name.includes('radius') ? this.nodeBuffers.radius :
+                       name.includes('borderWidth') ? this.nodeBuffers.borderWidth :
+                       name.includes('borderColor') ? this.nodeBuffers.borderColor :
+                       this.edgeBuffers.position;
+        
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+        gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+        gl.enableVertexAttribArray(location);
+        gl.vertexAttribPointer(location, size, gl.FLOAT, false, 0, 0);
+      }
+
+      renderLabels(nodes, width, height) {
+        // CRITICAL FIX: Cannot create 2D context on canvas with WebGL context
+        // Instead, create a temporary overlay canvas for text rendering
+        const overlayCanvas = document.createElement('canvas');
+        overlayCanvas.width = width;
+        overlayCanvas.height = height;
+        overlayCanvas.style.position = 'absolute';
+        overlayCanvas.style.top = '0';
+        overlayCanvas.style.left = '0';
+        overlayCanvas.style.pointerEvents = 'none';
+        overlayCanvas.style.zIndex = '1';
+        
+        const ctx = overlayCanvas.getContext('2d');
+        if (!ctx) return;
+        
+        ctx.save();
+        ctx.font = '12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        ctx.fillStyle = '#1f2937';
+        
+        nodes.forEach(node => {
+          const radius = nodeSize(node);
+          if (radius > 8) {
+            const label = (node.label || '').substring(0, 20);
+            ctx.fillText(label, node.x, node.y - radius - 5);
+          }
+        });
+        
+        ctx.restore();
+        
+        // Replace any existing overlay
+        const existingOverlay = this.canvas.parentNode.querySelector('.text-overlay');
+        if (existingOverlay) {
+          existingOverlay.remove();
+        }
+        
+        // Add the overlay
+        overlayCanvas.className = 'text-overlay';
+        this.canvas.parentNode.appendChild(overlayCanvas);
+      }
+
+      cleanup() {
+        if (!this.initialized) return;
+        
+        const gl = this.gl;
+        Object.values(this.edgeBuffers).forEach(buffer => gl.deleteBuffer(buffer));
+        Object.values(this.nodeBuffers).forEach(buffer => gl.deleteBuffer(buffer));
+        
+        if (this.edgeProgram) gl.deleteProgram(this.edgeProgram);
+        if (this.nodeProgram) gl.deleteProgram(this.nodeProgram);
+      }
+    }
+
+    // =========================
+    // Layouts & drawing (GPU-accelerated)
     // =========================
     function applyForceLayout() {
       const centerX = canvas.width / 2, centerY = canvas.height / 2;
@@ -1184,7 +1879,7 @@
 
     function initializeVisualization() {
       if (!graphData || graphData.nodes.length === 0) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
         return;
       }
       canvas.width = canvas.offsetWidth;
@@ -1196,6 +1891,28 @@
         y: canvas.height/2 + (Math.random()-0.5)*100,
         vx: 0, vy: 0
       }));
+
+      // Update global nodes reference for WebGL renderer
+      window.nodes = nodes;
+
+      // CRITICAL FIX: Initialize GPU renderer FIRST, before any 2D context creation
+      // This prevents the "Canvas already has a 2D context" error
+      if (!gpuRenderer) {
+        console.log('Attempting GPU renderer initialization...');
+        gpuRenderer = new GPUNetworkRenderer(canvas);
+        
+        if (!gpuRenderer || !gpuRenderer.initialized) {
+          console.log('GPU renderer failed, will use CPU rendering');
+          gpuRenderer = null;
+          // Only create 2D context if WebGL failed
+          if (!ctx) {
+            if (!gl && !gpuRenderer) {
+              ctx = canvas.getContext('2d');
+              canvas.__ctxType = '2d';
+            }
+          }
+        }
+      }
 
       startAnimation();
     }
@@ -1212,12 +1929,7 @@
     }
 
     function getNodeColor(node) {
-      if (!node) return '#9ca3af';
-      if (node.id === hoveredNodeId) return '#111827';
-      if (hoveredNeighborIds.has(node.id)) return '#f59e0b';
       if (node.suspicious) return '#dc2626';
-      if (searchMatchIds.size && searchMatchIds.has(node.id)) return '#ef4444';
-      if (focusedNodeId && node.id === focusedNodeId) return '#2563eb';
       if (communities && communities.communities.has(node.id)) {
         const cid = communities.communities.get(node.id);
         return communityColors[cid % communityColors.length];
@@ -1227,29 +1939,80 @@
       return '#10b981'; // Green for hashtags
     }
 
-    function nodeSize(node) {
-      if (!node) return 8;
+    function nodeSize(n) {
       const sizeBy = nodeSizeBySelect.value;
-
+      
       switch (sizeBy) {
-        case 'degree': {
-          const degree = node.degree || 0;
+        case 'degree':
+          const degree = n.degree || 0;
           return Math.min(5 + Math.sqrt(degree) * 3, 30);
-        }
+        
         case 'followers':
           if (n.type === 'user') {
             return Math.min(5 + Math.log((n.followers || 0) + 1) * 1.5, 25);
           } else {
+            // For hashtags and locations, size by count
             return Math.min(5 + (n.count || 1) * 1.5, 25);
           }
         
         case 'uniform':
+          return 8;
+        
         default:
           return 8;
       }
     }
 
     function drawNetwork() {
+      // Clean up any existing overlays before redrawing
+      cleanupOverlays();
+      
+      // Try GPU rendering first, fallback to CPU if needed
+      if (gpuRenderer && gpuRenderer.initialized) {
+        const success = gpuRenderer.render(nodes, graphData.links, canvas.width, canvas.height);
+        if (success) {
+          // Render labels using Canvas 2D (text rendering in WebGL is complex)
+          gpuRenderer.renderLabels(nodes, canvas.width, canvas.height);
+          updateRenderingIndicator(true);
+          return;
+        }
+      }
+      
+      // Fallback to CPU rendering
+      drawNetworkCPU();
+      updateRenderingIndicator(false);
+    }
+
+    function cleanupOverlays() {
+      // Remove any existing overlay canvases
+      const container = canvas.parentNode;
+      const overlays = container.querySelectorAll('.text-overlay, .highlight-overlay, .search-highlight-overlay, .hover-overlay');
+      overlays.forEach(overlay => overlay.remove());
+    }
+
+    function updateRenderingIndicator(isGPU) {
+      if (isGPU) {
+        renderingIndicator.textContent = '🚀 GPU rendering';
+        renderingIndicator.style.color = '#10b981';
+      } else {
+        renderingIndicator.textContent = '⚙ CPU rendering';
+        renderingIndicator.style.color = '#f59e0b';
+      }
+    }
+
+    function drawNetworkCPU() {
+      // Create 2D context on demand if not already created
+      if (!ctx) {
+        if (!gl && !gpuRenderer) {
+          ctx = canvas.getContext('2d');
+          canvas.__ctxType = '2d';
+        }
+        if (!ctx) {
+          console.error('Failed to create 2D context');
+          return;
+        }
+      }
+      
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       // edges
@@ -1300,9 +2063,6 @@
       return best;
     }
 
-    // =========================
-    // Hover & Click UX
-    // =========================
     function buildAdjacency(graph) {
       adjacency = new Map();
       graph.nodes.forEach(n => adjacency.set(n.id, new Set()));
@@ -1356,12 +2116,114 @@
 
     function highlightNeighbors(node) {
       const nbs = adjacency.get(node.id) || new Set();
+      
+      // For GPU rendering, we need to render the highlight effect
+      if (gpuRenderer && gpuRenderer.initialized) {
+        // Create highlight data for GPU rendering
+        const highlightNodes = [];
+        for (const id of nbs) {
+          const nb = idToNode.get(id); 
+          if (!nb) continue;
+          highlightNodes.push({
+            x: nb.x,
+            y: nb.y,
+            radius: nodeSize(nb) + 8,
+            color: [1.0, 0.96, 0.42], // #fde68a in RGB
+            alpha: 0.15
+          });
+        }
+        renderHighlightGlow(highlightNodes, node, nbs);
+      } else {
+        // Fallback to CPU rendering - highlight neighbor nodes
       ctx.save(); ctx.globalAlpha = 0.15; ctx.fillStyle = '#fde68a';
       for (const id of nbs) {
         const nb = idToNode.get(id); if (!nb) continue;
         ctx.beginPath(); ctx.arc(nb.x, nb.y, nodeSize(nb)+8, 0, Math.PI*2); ctx.fill();
       }
       ctx.restore();
+        
+        // Highlight connected edges
+        ctx.save();
+        graphData.links.forEach(link => {
+          const isConnected = (link.source === node.id && nbs.has(link.target)) ||
+                             (link.target === node.id && nbs.has(link.source));
+          if (!isConnected) return;
+          
+          const s = nodes.find(n => n.id === link.source);
+          const t = nodes.find(n => n.id === link.target);
+          if (!s || !t) return;
+          
+          const w = link.weight || 1;
+          ctx.lineWidth = Math.min(2 + w*0.5, 6);
+          ctx.strokeStyle = '#fbbf24'; // Amber color for highlighted edges
+          ctx.globalAlpha = 0.8;
+          ctx.beginPath(); 
+          ctx.moveTo(s.x, s.y); 
+          ctx.lineTo(t.x, t.y); 
+          ctx.stroke();
+        });
+        ctx.restore();
+      }
+    }
+
+    function renderHighlightGlow(highlightNodes, node, nbs) {
+      // CRITICAL FIX: Cannot create 2D context on canvas with WebGL context
+      // Create a temporary overlay canvas for highlight effects
+      const overlayCanvas = document.createElement('canvas');
+      overlayCanvas.width = canvas.width;
+      overlayCanvas.height = canvas.height;
+      overlayCanvas.style.position = 'absolute';
+      overlayCanvas.style.top = '0';
+      overlayCanvas.style.left = '0';
+      overlayCanvas.style.pointerEvents = 'none';
+      overlayCanvas.style.zIndex = '2';
+      
+      const tempCtx = overlayCanvas.getContext('2d');
+      
+      // Draw highlighted edges first (so they appear behind nodes)
+      if (node && nbs) {
+        tempCtx.save();
+        graphData.links.forEach(link => {
+          const isConnected = (link.source === node.id && nbs.has(link.target)) ||
+                             (link.target === node.id && nbs.has(link.source));
+          if (!isConnected) return;
+          
+          const s = nodes.find(n => n.id === link.source);
+          const t = nodes.find(n => n.id === link.target);
+          if (!s || !t) return;
+          
+          const w = link.weight || 1;
+          tempCtx.lineWidth = Math.min(2 + w*0.5, 6);
+          tempCtx.strokeStyle = '#fbbf24'; // Amber color for highlighted edges
+          tempCtx.globalAlpha = 0.8;
+          tempCtx.beginPath(); 
+          tempCtx.moveTo(s.x, s.y); 
+          tempCtx.lineTo(t.x, t.y); 
+          tempCtx.stroke();
+        });
+        tempCtx.restore();
+      }
+      
+      // Draw highlighted nodes
+      tempCtx.save();
+      highlightNodes.forEach(node => {
+        tempCtx.globalAlpha = node.alpha;
+        tempCtx.fillStyle = `rgb(${Math.floor(node.color[0]*255)}, ${Math.floor(node.color[1]*255)}, ${Math.floor(node.color[2]*255)})`;
+        tempCtx.beginPath();
+        tempCtx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
+        tempCtx.fill();
+      });
+      tempCtx.restore();
+      
+      // Remove any existing highlight overlay
+      const existingHighlight = canvas.parentNode.querySelector('.highlight-overlay');
+      if (existingHighlight) {
+        existingHighlight.remove();
+      }
+      
+      // Add the highlight overlay
+      overlayCanvas.className = 'highlight-overlay';
+      canvas.parentNode.appendChild(overlayCanvas);
     }
 
     canvas.addEventListener('mousemove', (e) => {
@@ -1377,12 +2239,17 @@
         // tooltip content
         const deg = n.degree ?? 0;
         const label = n.label ?? n.id;
+        let prefix = '';
+        if (n.type === 'user') prefix = '@';
+        else if (n.type === 'hashtag') prefix = '#';
+        else if (n.type === 'location') prefix = '📍';
+        
         const meta = (n.type==='user')
           ? `${n.verified?'Verified · ':''}${(n.followers||0).toLocaleString()} followers`
           : `${n.count||0} posts`;
 
         tooltipEl.innerHTML =
-          `<div style="font-weight:600">${n.type==='user'?'@':''}${label}</div>
+          `<div style="font-weight:600">${prefix}${label}</div>
            <div style="opacity:.85">${n.type} · degree ${deg}${meta ? ' · ' + meta : ''}</div>`;
         tooltipEl.style.display = 'block';
 
@@ -1398,8 +2265,36 @@
         // redraw with neighbor glow + ring
         drawNetwork();
         highlightNeighbors(n);
-        ctx.save(); ctx.strokeStyle = '#111827'; ctx.lineWidth = 2; ctx.globalAlpha = 0.6;
-        ctx.beginPath(); ctx.arc(n.x, n.y, nodeSize(n)+4, 0, Math.PI*2); ctx.stroke(); ctx.restore();
+        
+        // Draw hover ring using overlay to avoid context conflicts
+        const hoverCanvas = document.createElement('canvas');
+        hoverCanvas.width = canvas.width;
+        hoverCanvas.height = canvas.height;
+        hoverCanvas.style.position = 'absolute';
+        hoverCanvas.style.top = '0';
+        hoverCanvas.style.left = '0';
+        hoverCanvas.style.pointerEvents = 'none';
+        hoverCanvas.style.zIndex = '4';
+        
+        const hoverCtx = hoverCanvas.getContext('2d');
+        hoverCtx.save(); 
+        hoverCtx.strokeStyle = '#111827'; 
+        hoverCtx.lineWidth = 2; 
+        hoverCtx.globalAlpha = 0.6;
+        hoverCtx.beginPath(); 
+        hoverCtx.arc(n.x, n.y, nodeSize(n)+4, 0, Math.PI*2); 
+        hoverCtx.stroke(); 
+        hoverCtx.restore();
+        
+        // Remove any existing hover overlay
+        const existingHover = canvas.parentNode.querySelector('.hover-overlay');
+        if (existingHover) {
+          existingHover.remove();
+        }
+        
+        // Add the hover overlay
+        hoverCanvas.className = 'hover-overlay';
+        canvas.parentNode.appendChild(hoverCanvas);
       } else {
         hoveredNode = null;
         canvas.classList.remove('hovering');
@@ -1569,7 +2464,7 @@
       setTimeout(() => {
         communities = detectCommunities(graphData);
         if (communities) document.getElementById('stat-communities').textContent = communities.count;
-        refreshCosmographStyles();
+        drawNetwork();
         loading.classList.remove('active');
         updateCoach();
       }, 100);
@@ -1580,7 +2475,7 @@
     // =========================
     networkTypeSelect.addEventListener('change', updateNetwork);
     nodeSizeBySelect.addEventListener('change', () => {
-      refreshCosmographStyles();
+      if (nodes.length > 0) drawNetwork();
     });
     engagementFilter.addEventListener('input', (e) => {
       const value = e.target.value; engagementValue.textContent = `${value}+ interactions`;
@@ -1615,16 +2510,40 @@
       if (!term || !nodes.length) { drawNetwork(); return; }
       drawNetwork();
       const matches = nodes.filter(n => (n.label || '').toLowerCase().includes(term));
-      ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 3;
-      matches.forEach(n => { const r = nodeSize(n); ctx.beginPath(); ctx.arc(n.x, n.y, r+3, 0, Math.PI*2); ctx.stroke(); });
+      
+      // Draw search highlights using overlay canvas to avoid context conflicts
+      const highlightCanvas = document.createElement('canvas');
+      highlightCanvas.width = canvas.width;
+      highlightCanvas.height = canvas.height;
+      highlightCanvas.style.position = 'absolute';
+      highlightCanvas.style.top = '0';
+      highlightCanvas.style.left = '0';
+      highlightCanvas.style.pointerEvents = 'none';
+      highlightCanvas.style.zIndex = '3';
+      
+      const highlightCtx = highlightCanvas.getContext('2d');
+      highlightCtx.strokeStyle = '#ef4444'; 
+      highlightCtx.lineWidth = 3;
+      matches.forEach(n => { 
+        const r = nodeSize(n); 
+        highlightCtx.beginPath(); 
+        highlightCtx.arc(n.x, n.y, r+3, 0, Math.PI*2); 
+        highlightCtx.stroke(); 
+      });
+      
+      // Remove any existing search highlight overlay
+      const existingSearchHighlight = canvas.parentNode.querySelector('.search-highlight-overlay');
+      if (existingSearchHighlight) {
+        existingSearchHighlight.remove();
+      }
+      
+      // Add the search highlight overlay
+      highlightCanvas.className = 'search-highlight-overlay';
+      canvas.parentNode.appendChild(highlightCanvas);
     });
 
     window.addEventListener('resize', () => {
-      if (graphData && graphData.nodes.length > 0) {
-        resizeCanvas();
-        cosmographInstance?.fitView(250);
-        refreshCosmographStyles();
-      }
+      if (graphData && graphData.nodes.length > 0) initializeVisualization();
     });
 
     // =========================
