@@ -135,20 +135,332 @@
     .cib-score { font-weight: 700; color: #dc2626; }
 
     .small { font-size: 12px; color: #374151; }
+    
+    /* Advanced Settings Styling */
+    .settings-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 0.75rem;
+    }
+    
+    .setting-item label {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+      cursor: help;
+    }
+    
+    .setting-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: #374151;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    
+    .setting-item input[type="number"],
+    .setting-item select {
+      padding: 0.375rem 0.5rem;
+      font-size: 0.875rem;
+      border: 1px solid #d1d5db;
+      border-radius: 0.375rem;
+      width: 100%;
+      background: white;
+    }
+    
+    .setting-item input[type="number"]:focus,
+    .setting-item select:focus {
+      outline: none;
+      border-color: #2563eb;
+      box-shadow: 0 0 0 3px rgba(37,99,235,0.1);
+    }
+    
+    .btn-settings:hover:not(:disabled) { background: #4b5563; }
+    
+    /* Help Button & Modal */
+    .help-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.375rem;
+      padding: 0.5rem 0.875rem;
+      background: #10b981;
+      color: white;
+      border: none;
+      border-radius: 0.5rem;
+      cursor: pointer;
+      font-size: 0.875rem;
+      font-weight: 500;
+      transition: background 0.2s;
+    }
+    
+    .help-btn:hover {
+      background: #059669;
+    }
+    
+    .help-modal {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 10000;
+      overflow: auto;
+      padding: 2rem;
+      animation: fadeIn 0.2s ease-out;
+    }
+    
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    
+    .help-modal.active {
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+    }
+    
+    .help-content {
+      background: white;
+      border-radius: 0.75rem;
+      max-width: 900px;
+      width: 100%;
+      max-height: 90vh;
+      overflow-y: auto;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+      position: relative;
+      animation: slideUp 0.3s ease-out;
+    }
+    
+    @keyframes slideUp {
+      from { 
+        opacity: 0;
+        transform: translateY(20px);
+      }
+      to { 
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+    
+    .help-header {
+      position: sticky;
+      top: 0;
+      background: white;
+      border-bottom: 1px solid #e5e7eb;
+      padding: 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      z-index: 10;
+    }
+    
+    .help-title {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: #111827;
+    }
+    
+    .help-close {
+      background: none;
+      border: none;
+      font-size: 1.5rem;
+      color: #6b7280;
+      cursor: pointer;
+      width: 2rem;
+      height: 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 0.375rem;
+      transition: background 0.2s;
+    }
+    
+    .help-close:hover {
+      background: #f3f4f6;
+      color: #111827;
+    }
+    
+    .help-body {
+      padding: 2rem;
+      line-height: 1.7;
+      color: #374151;
+    }
+    
+    .help-body h1 {
+      font-size: 2rem;
+      margin-top: 2rem;
+      margin-bottom: 1rem;
+      color: #111827;
+      border-bottom: 2px solid #e5e7eb;
+      padding-bottom: 0.5rem;
+    }
+    
+    .help-body h2 {
+      font-size: 1.5rem;
+      margin-top: 2rem;
+      margin-bottom: 0.75rem;
+      color: #111827;
+    }
+    
+    .help-body h3 {
+      font-size: 1.25rem;
+      margin-top: 1.5rem;
+      margin-bottom: 0.5rem;
+      color: #1f2937;
+    }
+    
+    .help-body h4 {
+      font-size: 1.1rem;
+      margin-top: 1rem;
+      margin-bottom: 0.5rem;
+      color: #374151;
+      font-weight: 600;
+    }
+    
+    .help-body p {
+      margin-bottom: 1rem;
+    }
+    
+    .help-body ul, .help-body ol {
+      margin-bottom: 1rem;
+      padding-left: 1.5rem;
+    }
+    
+    .help-body li {
+      margin-bottom: 0.5rem;
+    }
+    
+    .help-body code {
+      background: #f3f4f6;
+      padding: 0.125rem 0.375rem;
+      border-radius: 0.25rem;
+      font-family: 'Courier New', monospace;
+      font-size: 0.875em;
+      color: #be123c;
+    }
+    
+    .help-body pre {
+      background: #1f2937;
+      color: #f3f4f6;
+      padding: 1rem;
+      border-radius: 0.5rem;
+      overflow-x: auto;
+      margin-bottom: 1rem;
+    }
+    
+    .help-body pre code {
+      background: transparent;
+      color: inherit;
+      padding: 0;
+    }
+    
+    .help-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 1rem;
+      font-size: 0.875rem;
+    }
+    
+    .help-body th {
+      background: #f9fafb;
+      padding: 0.75rem;
+      text-align: left;
+      font-weight: 600;
+      border: 1px solid #e5e7eb;
+    }
+    
+    .help-body td {
+      padding: 0.75rem;
+      border: 1px solid #e5e7eb;
+    }
+    
+    .help-body blockquote {
+      border-left: 4px solid #10b981;
+      padding-left: 1rem;
+      margin: 1rem 0;
+      color: #6b7280;
+      font-style: italic;
+    }
+    
+    .help-body a {
+      color: #2563eb;
+      text-decoration: none;
+    }
+    
+    .help-body a:hover {
+      text-decoration: underline;
+    }
+    
+    .help-body hr {
+      border: none;
+      border-top: 1px solid #e5e7eb;
+      margin: 2rem 0;
+    }
+    
+    .help-body .emoji {
+      font-style: normal;
+    }
   </style>
+
+  <!-- Transformers.js for Semantic Similarity Detection -->
+  <script type="module">
+    import { pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.1';
+    
+    // Initialize model (loads once, then cached)
+    let extractor = null;
+    
+    async function initEmbeddingModel() {
+      if (!extractor) {
+        console.log('Loading embedding model (Xenova/all-MiniLM-L6-v2, ~23MB)...');
+        extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
+        console.log('✓ Embedding model ready (384-dimensional vectors)');
+      }
+      return extractor;
+    }
+    
+    // Generate embedding for text (384-dimensional normalized vector)
+    async function getEmbedding(text) {
+      const model = await initEmbeddingModel();
+      const output = await model(text, { pooling: 'mean', normalize: true });
+      return Array.from(output.data);
+    }
+    
+    // Calculate cosine similarity (already normalized, so just dot product)
+    function cosineSimilarity(vecA, vecB) {
+      return vecA.reduce((sum, a, i) => sum + a * vecB[i], 0);
+    }
+    
+    // Expose globally
+    window.getEmbedding = getEmbedding;
+    window.cosineSimilarity = cosineSimilarity;
+    window.initEmbeddingModel = initEmbeddingModel;
+  </script>
 </head>
 <body>
   <div class="container">
     <!-- Header -->
     <div class="header">
       <div class="header-top">
-        <div>
-          <h1>Zeeschuim Surfer</h1>
-          <div class="subtitle">
-            Basic network analysis and CIB detection
-            <span id="platform-indicator" style="margin-left:0.5rem; opacity:0.7;"></span>
-            <span id="rendering-indicator" style="margin-left:0.5rem; opacity:0.7; font-size:0.75rem;"></span>
+        <div style="display: flex; align-items: center; gap: 1rem;">
+          <div>
+            <h1>Zeeschuim Surfer</h1>
+            <div class="subtitle">
+              Basic network analysis and CIB detection
+              <span id="platform-indicator" style="margin-left:0.5rem; opacity:0.7;"></span>
+              <span id="rendering-indicator" style="margin-left:0.5rem; opacity:0.7; font-size:0.75rem;"></span>
+            </div>
           </div>
+          <button id="help-btn" class="help-btn" title="View complete user guide">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+              <line x1="12" y1="17" x2="12.01" y2="17"></line>
+            </svg>
+            How to?
+          </button>
         </div>
         <label class="upload-btn">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -280,7 +592,7 @@
             </svg>
             Synchronized Posting Time Window
           </label>
-          <input type="range" id="time-window" min="60" max="1800" step="60" value="300">
+          <input type="range" id="time-window" min="1" max="1800" step="1" value="300">
           <div class="range-value" id="time-window-value">5 minutes</div>
         </div>
 
@@ -302,6 +614,13 @@
             </svg>
             Detect Coordinated Behavior
           </button>
+          <button class="btn btn-settings" id="cib-settings-btn" disabled style="background: #6b7280; margin-bottom: 0.5rem;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M12 1v6m0 6v6M17 12h6M1 12h6"></path>
+            </svg>
+            Advanced CIB Settings
+          </button>
           <button class="btn btn-detect" id="detect-btn" disabled>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="3"></circle>
@@ -321,6 +640,104 @@
         </div>
 
         <div class="section-divider"></div>
+
+        <!-- Advanced CIB Settings Panel -->
+        <div class="info-panel" id="cib-settings-panel" style="display: none;">
+          <div class="info-header">
+            <div class="info-title">Advanced CIB Parameters</div>
+            <button class="close-btn" id="close-cib-settings">✕</button>
+          </div>
+          
+          <div style="font-size: 0.75rem; color: #6b7280; margin-bottom: 1rem;">
+            Fine-tune detection thresholds. Hover over labels for explanations.
+          </div>
+          
+          <div class="settings-grid">
+            <div class="setting-item">
+              <label title="Enable/disable AI-powered semantic similarity detection. Disable for faster processing on large datasets.">
+                <span class="setting-label">🤖 Use Semantic Similarity</span>
+                <select id="param-semantic-enabled">
+                  <option value="true">Enabled (slower, more accurate)</option>
+                  <option value="false">Disabled (faster)</option>
+                </select>
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="Cosine similarity threshold for AI-powered caption matching (0-1). Higher = stricter">
+                <span class="setting-label">Semantic Threshold</span>
+                <input type="number" id="param-semantic-threshold" min="0" max="1" step="0.05" value="0.85">
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="Jaccard similarity for 5-gram template matching (0-1). Higher = stricter">
+                <span class="setting-label">N-gram Overlap</span>
+                <input type="number" id="param-ngram-threshold" min="0" max="1" step="0.05" value="0.3">
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="Levenshtein similarity for username matching (0-1). Higher = stricter">
+                <span class="setting-label">Username Similarity</span>
+                <input type="number" id="param-username-threshold" min="0" max="1" step="0.05" value="0.8">
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="TF-IDF score threshold for rare hashtag detection (0-2). Higher = rarer hashtags only">
+                <span class="setting-label">TF-IDF Threshold</span>
+                <input type="number" id="param-tfidf-threshold" min="0" max="2" step="0.1" value="0.5">
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="Z-score threshold for high-volume detection (1-4). Higher = stricter">
+                <span class="setting-label">Z-Score Threshold</span>
+                <input type="number" id="param-zscore-threshold" min="1" max="4" step="0.5" value="2">
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="Minimum posts in time window to trigger burst detection (3-10)">
+                <span class="setting-label">Burst Min Posts</span>
+                <input type="number" id="param-burst-posts" min="3" max="10" step="1" value="5">
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="Coefficient of variation threshold for rhythm detection (0-0.5). Lower = more regular">
+                <span class="setting-label">Rhythm CV Threshold</span>
+                <input type="number" id="param-rhythm-cv" min="0" max="0.5" step="0.05" value="0.1">
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="Max posting gap in seconds for 24/7 detection (3600-14400). Lower = stricter">
+                <span class="setting-label">Night Gap (seconds)</span>
+                <input type="number" id="param-night-gap" min="3600" max="14400" step="1800" value="7200">
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="Min accounts in cluster for account creation detection (3-10)">
+                <span class="setting-label">Cluster Min Size</span>
+                <input type="number" id="param-cluster-size" min="3" max="10" step="1" value="5">
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="Score multiplier per indicator (0.1-0.5). Higher = more penalty for multiple indicators">
+                <span class="setting-label">Cross-Indicator Bonus</span>
+                <input type="number" id="param-cross-multiplier" min="0.1" max="0.5" step="0.05" value="0.3">
+              </label>
+            </div>
+          </div>
+          
+          <button class="btn" id="reset-cib-params" style="background: #6b7280; color: white; margin-top: 1rem;">
+            Reset to Defaults
+          </button>
+        </div>
 
         <!-- CIB Detection Results -->
         <div class="info-panel" id="cib-panel" style="display: none;">
@@ -359,7 +776,7 @@
           <div class="legend-item"><div class="legend-dot purple" style="background:#8b5cf6;"></div><span>Regular User</span></div>
           <div class="legend-item"><div class="legend-dot green" style="background:#10b981;"></div><span>Hashtag</span></div>
           <div class="legend-item"><div class="legend-dot" style="background:#f59e0b;"></div><span>Location (Instagram)</span></div>
-          <div class="legend-note">Red nodes indicate accounts flagged as potentially coordinated based on behavioral indicators.</div>
+          <div class="legend-note">Red nodes indicate accounts flagged as potentially coordinated based on behavioral indicators. Supports 🎵 TikTok, 📷 Instagram, and 🐦 Twitter/X data.</div>
         </div>
 
       </div>
@@ -436,6 +853,7 @@
       const platform = post.source_platform || '';
       if (platform.includes('instagram')) return 'instagram';
       if (platform.includes('tiktok')) return 'tiktok';
+      if (platform.includes('twitter') || platform.includes('x.com')) return 'twitter';
       return 'unknown';
     }
 
@@ -511,6 +929,77 @@
       } else if (platform === 'tiktok') {
         // TikTok data is already in the right format, just mark platform
         normalized.data = { ...post.data };
+      } else if (platform === 'twitter') {
+        // Normalize Twitter/X data to TikTok-like structure
+        const tweet = post.data;
+        const userResult = tweet.core?.user_results?.result || {};
+        const userCore = userResult.core || {};
+        const userLegacy = userResult.legacy || {};
+        const tweetLegacy = tweet.legacy || {};
+        
+        // Parse Twitter date format: "Wed Oct 15 06:04:00 +0000 2025"
+        const parseTwitterDate = (dateStr) => {
+          if (!dateStr) return null;
+          const date = new Date(dateStr);
+          const timestamp = Math.floor(date.getTime() / 1000);
+          // Debug: log if parsing failed
+          if (isNaN(timestamp)) {
+            console.warn('Failed to parse Twitter date:', dateStr);
+            return null;
+          }
+          return timestamp;
+        };
+        
+        // Extract mentions and hashtags
+        const mentions = (tweetLegacy.entities?.user_mentions || []).map(m => ({
+          type: 0,
+          userUniqueId: m.screen_name,
+          userId: m.id_str
+        }));
+        
+        const hashtags = (tweetLegacy.entities?.hashtags || []).map(h => ({
+          id: h.text,
+          title: h.text
+        }));
+        
+        if (mentions.length > 0 || hashtags.length > 0) {
+          console.log(`Tweet ${tweet.rest_id}: ${mentions.length} mentions, ${hashtags.length} hashtags`);
+        }
+        
+        normalized.data = {
+          // Post ID
+          id: tweet.rest_id,
+          // Author info
+          author: {
+            id: userResult.rest_id,
+            uniqueId: userCore.screen_name || '',
+            nickname: userCore.name || '',
+            verified: userResult.is_blue_verified || userResult.verification?.verified || false,
+            createTime: parseTwitterDate(userCore.created_at) // Account creation date
+          },
+          // Timestamp
+          createTime: parseTwitterDate(tweetLegacy.created_at),
+          // Tweet text
+          desc: tweetLegacy.full_text || '',
+          // Hashtags
+          challenges: hashtags,
+          // Mentions
+          textExtra: mentions,
+          // Engagement stats
+          stats: {
+            diggCount: tweetLegacy.favorite_count || 0,
+            commentCount: tweetLegacy.reply_count || 0,
+            shareCount: tweetLegacy.retweet_count || 0,
+            playCount: parseInt(tweet.views?.count || '0')
+          },
+          // Author stats
+          authorStats: {
+            followerCount: userLegacy.followers_count || 0,
+            followingCount: userLegacy.friends_count || 0,
+            heartCount: userLegacy.favourites_count || 0,
+            videoCount: userLegacy.statuses_count || 0
+          }
+        };
       }
 
       return normalized;
@@ -539,6 +1028,10 @@
     const exportBtn = document.getElementById('export-btn');
     const detectBtn = document.getElementById('detect-btn');
     const cibBtn = document.getElementById('cib-btn');
+    const cibSettingsBtn = document.getElementById('cib-settings-btn');
+    const cibSettingsPanel = document.getElementById('cib-settings-panel');
+    const closeCibSettings = document.getElementById('close-cib-settings');
+    const resetCibParamsBtn = document.getElementById('reset-cib-params');
     const canvas = document.getElementById('network-canvas');
     let ctx = null; // Don't create context yet - let renderer decide
     let gl = null;
@@ -574,8 +1067,18 @@
     cibThreshold.addEventListener('input', (e)=>{ thresholdValue.textContent = thresholdLabels[e.target.value]; });
 
     timeWindowInput.addEventListener('input', (e) => {
-      const minutes = Math.floor(e.target.value / 60);
-      timeWindowValue.textContent = `${minutes} minute${minutes !== 1 ? 's' : ''}`;
+      const seconds = parseInt(e.target.value);
+      if (seconds < 60) {
+        timeWindowValue.textContent = `${seconds} second${seconds !== 1 ? 's' : ''}`;
+      } else {
+        const minutes = Math.floor(seconds / 60);
+        const remainingSecs = seconds % 60;
+        if (remainingSecs === 0) {
+          timeWindowValue.textContent = `${minutes} minute${minutes !== 1 ? 's' : ''}`;
+        } else {
+          timeWindowValue.textContent = `${minutes}m ${remainingSecs}s`;
+        }
+      }
     });
 
     // =========================
@@ -606,6 +1109,7 @@
         const platformParts = [];
         if (platformCounts.tiktok) platformParts.push(`🎵 TikTok (${platformCounts.tiktok})`);
         if (platformCounts.instagram) platformParts.push(`📷 Instagram (${platformCounts.instagram})`);
+        if (platformCounts.twitter) platformParts.push(`🐦 Twitter/X (${platformCounts.twitter})`);
         if (platformCounts.unknown) platformParts.push(`❓ Unknown (${platformCounts.unknown})`);
         
         const platformText = platformParts.join(' · ') || 'No data';
@@ -628,6 +1132,7 @@
         exportBtn.disabled = false;
         detectBtn.disabled = false;
         cibBtn.disabled = false;
+        cibSettingsBtn.disabled = false;
       } catch (err) {
         alert('Error parsing file: ' + err.message);
       } finally {
@@ -659,29 +1164,366 @@
     function filterData() {
       const minEngagement = parseInt(engagementFilter.value, 10);
       const startDate = dateStart.value ? new Date(dateStart.value).getTime() / 1000 : 0;
-      const endDate = dateEnd.value ? new Date(dateEnd.value).getTime() / 1000 : Infinity;
+      // Add 86399 seconds (23:59:59) to make end date inclusive of the entire day
+      const endDate = dateEnd.value ? (new Date(dateEnd.value).getTime() / 1000) + 86399 : Infinity;
 
+      let debugCount = 0;
       filteredData = rawData.filter(post => {
         const engagement = (post.data?.stats?.diggCount || 0) + (post.data?.stats?.commentCount || 0) + (post.data?.stats?.shareCount || 0);
-        const postTime = post.data?.createTime || 0;
-        return engagement >= minEngagement && postTime >= startDate && postTime <= endDate;
+        const postTime = post.data?.createTime;
+        
+        // Include posts with missing timestamps if no date filter is set
+        const passesDateFilter = !postTime ? (!dateStart.value && !dateEnd.value) : 
+                                  (postTime >= startDate && postTime <= endDate);
+        
+        const passesEngagement = engagement >= minEngagement;
+        
+        // Debug first few failed filters
+        if (debugCount < 3 && (!passesEngagement || !passesDateFilter)) {
+          console.log(`Filter Debug - Post ${post.item_id}:`, {
+            engagement,
+            minEngagement,
+            passesEngagement,
+            postTime,
+            hasDateStart: !!dateStart.value,
+            hasDateEnd: !!dateEnd.value,
+            passesDateFilter,
+            createTime: post.data?.createTime
+          });
+          debugCount++;
+        }
+        
+        return passesEngagement && passesDateFilter;
       });
 
+      console.log(`Filtered: ${filteredData.length} posts out of ${rawData.length} (${rawData.length - filteredData.length} filtered out). MinEngagement: ${minEngagement}, DateRange: ${dateStart.value || 'none'} - ${dateEnd.value || 'none'}`);
       return filteredData;
+    }
+
+    // =========================
+    // CIB Advanced Parameters
+    // =========================
+    
+    // Default parameter values
+    const defaultCibParams = {
+      semanticEnabled: true,
+      semanticThreshold: 0.85,
+      ngramThreshold: 0.3,
+      usernameThreshold: 0.8,
+      tfidfThreshold: 0.5,
+      zscoreThreshold: 2,
+      burstPosts: 5,
+      rhythmCV: 0.1,
+      nightGap: 7200,
+      clusterSize: 5,
+      crossMultiplier: 0.3
+    };
+    
+    // Get current parameter values from UI (or defaults if panel not visible)
+    function getCibParams() {
+      return {
+        semanticEnabled: document.getElementById('param-semantic-enabled')?.value === 'true',
+        semanticThreshold: parseFloat(document.getElementById('param-semantic-threshold')?.value || defaultCibParams.semanticThreshold),
+        ngramThreshold: parseFloat(document.getElementById('param-ngram-threshold')?.value || defaultCibParams.ngramThreshold),
+        usernameThreshold: parseFloat(document.getElementById('param-username-threshold')?.value || defaultCibParams.usernameThreshold),
+        tfidfThreshold: parseFloat(document.getElementById('param-tfidf-threshold')?.value || defaultCibParams.tfidfThreshold),
+        zscoreThreshold: parseFloat(document.getElementById('param-zscore-threshold')?.value || defaultCibParams.zscoreThreshold),
+        burstPosts: parseInt(document.getElementById('param-burst-posts')?.value || defaultCibParams.burstPosts),
+        rhythmCV: parseFloat(document.getElementById('param-rhythm-cv')?.value || defaultCibParams.rhythmCV),
+        nightGap: parseInt(document.getElementById('param-night-gap')?.value || defaultCibParams.nightGap),
+        clusterSize: parseInt(document.getElementById('param-cluster-size')?.value || defaultCibParams.clusterSize),
+        crossMultiplier: parseFloat(document.getElementById('param-cross-multiplier')?.value || defaultCibParams.crossMultiplier)
+      };
+    }
+    
+    // Reset parameters to defaults
+    function resetCibParams() {
+      document.getElementById('param-semantic-enabled').value = defaultCibParams.semanticEnabled.toString();
+      document.getElementById('param-semantic-threshold').value = defaultCibParams.semanticThreshold;
+      document.getElementById('param-ngram-threshold').value = defaultCibParams.ngramThreshold;
+      document.getElementById('param-username-threshold').value = defaultCibParams.usernameThreshold;
+      document.getElementById('param-tfidf-threshold').value = defaultCibParams.tfidfThreshold;
+      document.getElementById('param-zscore-threshold').value = defaultCibParams.zscoreThreshold;
+      document.getElementById('param-burst-posts').value = defaultCibParams.burstPosts;
+      document.getElementById('param-rhythm-cv').value = defaultCibParams.rhythmCV;
+      document.getElementById('param-night-gap').value = defaultCibParams.nightGap;
+      document.getElementById('param-cluster-size').value = defaultCibParams.clusterSize;
+      document.getElementById('param-cross-multiplier').value = defaultCibParams.crossMultiplier;
+    }
+
+    // =========================
+    // CIB Helper Functions
+    // =========================
+    
+    // Statistical Z-Score calculation for adaptive thresholds
+    function calculateDatasetStatistics() {
+      const postCounts = new Map();
+      const hashtagCounts = new Map();
+      
+      filteredData.forEach(post => {
+        const userId = post.data?.author?.id;
+        if (!userId) return;
+        
+        postCounts.set(userId, (postCounts.get(userId) || 0) + 1);
+        
+        const hashtags = post.data?.challenges?.length || 0;
+        hashtagCounts.set(userId, (hashtagCounts.get(userId) || 0) + hashtags);
+      });
+      
+      const posts = Array.from(postCounts.values());
+      const hashtags = Array.from(hashtagCounts.values());
+      
+      // Calculate mean once and reuse for stdDev calculation (optimization)
+      const postsMean = posts.reduce((a, b) => a + b, 0) / posts.length;
+      const hashtagsMean = hashtags.reduce((a, b) => a + b, 0) / hashtags.length;
+      
+      return {
+        posts: {
+          mean: postsMean,
+          stdDev: Math.sqrt(posts.reduce((sq, n) => sq + Math.pow(n - postsMean, 2), 0) / posts.length)
+        },
+        hashtags: {
+          mean: hashtagsMean,
+          stdDev: Math.sqrt(hashtags.reduce((sq, n) => sq + Math.pow(n - hashtagsMean, 2), 0) / hashtags.length)
+        }
+      };
+    }
+    
+    // TF-IDF weighting for hashtag importance
+    function calculateTFIDF(hashtag, userHashtags, allHashtags) {
+      // Term Frequency: count occurrences without creating new array (optimization)
+      let count = 0;
+      for (let i = 0; i < userHashtags.length; i++) {
+        if (userHashtags[i] === hashtag) count++;
+      }
+      const tf = count / userHashtags.length;
+      
+      // Inverse Document Frequency: count without filter (optimization)
+      let usersWithHashtag = 0;
+      for (let i = 0; i < allHashtags.length; i++) {
+        if (allHashtags[i].has(hashtag)) usersWithHashtag++;
+      }
+      const idf = Math.log(allHashtags.length / (usersWithHashtag + 1));
+      
+      return tf * idf;
+    }
+    
+    // N-gram extraction for caption templates
+    function getNGrams(text, n = 5) {
+      const words = text.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/);
+      const ngrams = [];
+      
+      for (let i = 0; i <= words.length - n; i++) {
+        ngrams.push(words.slice(i, i + n).join(' '));
+      }
+      
+      return new Set(ngrams);
+    }
+    
+    // N-gram overlap calculation (Jaccard similarity)
+    function ngramOverlap(text1, text2, n = 5) {
+      const ngrams1 = getNGrams(text1, n);
+      const ngrams2 = getNGrams(text2, n);
+      
+      if (ngrams1.size === 0 || ngrams2.size === 0) return 0;
+      
+      const intersection = new Set([...ngrams1].filter(x => ngrams2.has(x)));
+      const union = new Set([...ngrams1, ...ngrams2]);
+      
+      return intersection.size / union.size;
+    }
+    
+    // Levenshtein distance for username similarity
+    function levenshteinDistance(str1, str2) {
+      const matrix = [];
+      
+      for (let i = 0; i <= str2.length; i++) {
+        matrix[i] = [i];
+      }
+      
+      for (let j = 0; j <= str1.length; j++) {
+        matrix[0][j] = j;
+      }
+      
+      for (let i = 1; i <= str2.length; i++) {
+        for (let j = 1; j <= str1.length; j++) {
+          if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
+            matrix[i][j] = matrix[i - 1][j - 1];
+          } else {
+            matrix[i][j] = Math.min(
+              matrix[i - 1][j - 1] + 1,
+              matrix[i][j - 1] + 1,
+              matrix[i - 1][j] + 1
+            );
+          }
+        }
+      }
+      
+      return matrix[str2.length][str1.length];
+    }
+    
+    // Temporal burst detection
+    function detectTemporalBursts(postsByUser, timeWindow, minPosts = 5) {
+      const bursts = [];
+      
+      postsByUser.forEach((posts, userId) => {
+        const timestamps = posts.map(p => p.timestamp).sort((a, b) => a - b);
+        
+        // Find bursts: minPosts+ within timeWindow (optimized counting)
+        for (let i = 0; i < timestamps.length; i++) {
+          const windowEnd = timestamps[i] + timeWindow;
+          
+          // Count posts in window without creating new array (optimization)
+          let postsInWindow = 0;
+          let j = i;
+          while (j < timestamps.length && timestamps[j] < windowEnd) {
+            postsInWindow++;
+            j++;
+          }
+          
+          if (postsInWindow >= minPosts) {
+            bursts.push({ 
+              userId, 
+              time: timestamps[i], 
+              count: postsInWindow,
+              timestamps: timestamps.slice(i, j)
+            });
+            break; // Only count first burst per user
+          }
+        }
+      });
+      
+      return bursts;
+    }
+    
+    // Posting rhythm regularity analysis
+    function analyzePostingRhythm(posts, cvThreshold = 0.1) {
+      if (posts.length < 5) return { regular: false, stdDev: null };
+      
+      const timestamps = posts.map(p => p.timestamp).sort();
+      const intervals = [];
+      
+      for (let i = 1; i < timestamps.length; i++) {
+        intervals.push(timestamps[i] - timestamps[i-1]);
+      }
+      
+      const mean = intervals.reduce((a, b) => a + b) / intervals.length;
+      const variance = intervals.reduce((sum, interval) => {
+        return sum + Math.pow(interval - mean, 2);
+      }, 0) / intervals.length;
+      const stdDev = Math.sqrt(variance);
+      
+      // Very regular if stdDev < cvThreshold% of mean (coefficient of variation)
+      const coefficientOfVariation = stdDev / mean;
+      
+      return {
+        regular: coefficientOfVariation < cvThreshold,
+        stdDev: stdDev,
+        mean: mean,
+        cv: coefficientOfVariation
+      };
+    }
+    
+    // Night posting analysis (24/7 activity detection)
+    function analyzeNightPosting(posts, gapThreshold = 7200) {
+      if (posts.length < 10) return { suspicious: false };
+      
+      const timestamps = posts.map(p => p.timestamp).sort();
+      const dailyGaps = new Map();
+      
+      // Group by day and find longest gap
+      timestamps.forEach(ts => {
+        const date = new Date(ts * 1000);
+        const dayKey = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+        
+        if (!dailyGaps.has(dayKey)) dailyGaps.set(dayKey, []);
+        dailyGaps.get(dayKey).push(date.getHours() * 3600 + date.getMinutes() * 60);
+      });
+      
+      const avgMaxGap = Array.from(dailyGaps.values()).map(day => {
+        day.sort((a, b) => a - b);
+        let maxGap = 0;
+        
+        for (let i = 1; i < day.length; i++) {
+          maxGap = Math.max(maxGap, day[i] - day[i-1]);
+        }
+        
+        // Check wrap-around (end of day to start)
+        if (day.length > 1) {
+          maxGap = Math.max(maxGap, 86400 - day[day.length-1] + day[0]);
+        }
+        
+        return maxGap;
+      }).reduce((a, b) => a + b, 0) / dailyGaps.size;
+      
+      // Flag if average longest gap < threshold (default: 2 hours = 7200 seconds)
+      return {
+        suspicious: avgMaxGap < gapThreshold,
+        avgMaxGap: avgMaxGap
+      };
+    }
+    
+    // Account creation clustering
+    function detectAccountCreationClusters(posts, timeWindow = 86400, minClusterSize = 5) { // 24 hours
+      const accountCreationTimes = new Map();
+      
+      posts.forEach(post => {
+        const author = post.data?.author;
+        if (!author?.id) return;
+        
+        // For TikTok, check if account creation time is available
+        const creationTime = author.createTime || post.data?.createTime;
+        if (!creationTime) return;
+        
+        accountCreationTimes.set(author.id, creationTime);
+      });
+      
+      // Group accounts by creation time
+      const clusters = new Map();
+      const sorted = Array.from(accountCreationTimes.entries()).sort((a, b) => a[1] - b[1]);
+      
+      sorted.forEach(([userId, time]) => {
+        let foundCluster = false;
+        
+        for (const [clusterTime, accounts] of clusters) {
+          if (Math.abs(time - clusterTime) < timeWindow) {
+            accounts.add(userId);
+            foundCluster = true;
+            break;
+          }
+        }
+        
+        if (!foundCluster) {
+          clusters.set(time, new Set([userId]));
+        }
+      });
+      
+      return Array.from(clusters.values()).filter(cluster => cluster.size >= minClusterSize);
     }
 
     // =========================
     // CIB detection (heuristics)
     // =========================
-    function detectCIB() {
+    async function detectCIB() {
       loading.classList.add('active');
       loadingText.textContent = 'Analyzing coordinated behavior patterns...';
 
-      setTimeout(() => {
+      setTimeout(async () => {
         const threshold = parseInt(cibThreshold.value, 10);
         const sensitivity = 11 - threshold; // higher threshold = stricter
 
         const results = { suspiciousUsers: new Set(), indicators: {} };
+        
+        // Get advanced parameters (uses defaults if settings panel not customized)
+        const params = getCibParams();
+        
+        // Initialize embedding model only if semantic similarity is enabled
+        if (params.semanticEnabled) {
+          await initEmbeddingModel();
+        }
+        
+        // Calculate dataset statistics for adaptive thresholds
+        const stats = calculateDatasetStatistics();
 
         // 1) Synchronized posting
         const postsByUser = new Map();
@@ -707,38 +1549,85 @@
         }
         results.indicators.synchronized = synchGroups.length;
 
-        // 2) Identical hashtag sequences
+        // 2) Rare hashtag sequences with TF-IDF weighting
+        // Build hashtag usage map first
+        const userHashtagSets = new Map();
+        filteredData.forEach(post => {
+          const userId = post.data?.author?.id;
+          const hashtags = post.data?.challenges?.map(c => c.title) || [];
+          if (!userId || !hashtags.length) return;
+          
+          if (!userHashtagSets.has(userId)) userHashtagSets.set(userId, []);
+          hashtags.forEach(h => userHashtagSets.get(userId).push(h));
+        });
+
+        // Detect with TF-IDF weighting to find rare coordinated hashtag combinations
         const hashtagSequences = new Map();
         filteredData.forEach(post => {
           const userId = post.data?.author?.id;
-          const hashtags = post.data?.challenges?.map(c => c.title).join(',') || '';
-          if (!userId || !hashtags) return;
-          const key = hashtags;
-          if (!hashtagSequences.has(key)) hashtagSequences.set(key, new Set());
-          hashtagSequences.get(key).add(userId);
+          const hashtags = post.data?.challenges?.map(c => c.title) || [];
+          if (!userId || !hashtags.length) return;
+          
+          // Calculate TF-IDF score for this hashtag set
+          const allSets = Array.from(userHashtagSets.values()).map(arr => new Set(arr));
+          const tfidfScore = hashtags.reduce((sum, h) => {
+            return sum + calculateTFIDF(h, userHashtagSets.get(userId), allSets);
+          }, 0) / hashtags.length;
+          
+          // Only consider high TF-IDF sequences (rare combinations)
+          if (tfidfScore > params.tfidfThreshold) {
+            const key = hashtags.sort().join(',');
+            if (!hashtagSequences.has(key)) hashtagSequences.set(key, { users: new Set(), tfidf: tfidfScore });
+            hashtagSequences.get(key).users.add(userId);
+          }
         });
+
+        // Flag groups using rare hashtag combinations
         let identicalHashtagUsers = 0;
-        hashtagSequences.forEach(users => {
-          if (users.size >= Math.max(3, Math.floor(15/sensitivity))) {
-            users.forEach(u => results.suspiciousUsers.add(u));
-            identicalHashtagUsers += users.size;
+        hashtagSequences.forEach((data, key) => {
+          if (data.users.size >= Math.max(3, Math.floor(15/sensitivity))) {
+            data.users.forEach(u => results.suspiciousUsers.add(u));
+            identicalHashtagUsers += data.users.size;
           }
         });
         results.indicators.identicalHashtags = identicalHashtagUsers;
 
-        // 3) Similar username prefixes
+        // 3) Similar usernames with Levenshtein distance
         const usernames = new Map();
         filteredData.forEach(post => {
-          const author = post.data?.author; if (!author) return;
+          const author = post.data?.author;
+          if (!author) return;
           const username = author.uniqueId || author.nickname || '';
           const userId = author.id;
-          const prefix = username.substring(0, Math.min(7, username.length));
-          if (prefix.length < 4) return;
-          if (!usernames.has(prefix)) usernames.set(prefix, new Set());
-          usernames.get(prefix).add(userId);
+          if (username.length < 4) return;
+          
+          usernames.set(userId, username);
         });
+
+        const usernameGroups = new Map();
+        const usernameArray = Array.from(usernames.entries());
+
+        for (let i = 0; i < usernameArray.length; i++) {
+          for (let j = i + 1; j < usernameArray.length; j++) {
+            const [id1, name1] = usernameArray[i];
+            const [id2, name2] = usernameArray[j];
+            
+            const distance = levenshteinDistance(name1, name2);
+            const maxLen = Math.max(name1.length, name2.length);
+            const similarity = 1 - (distance / maxLen);
+            
+            // Check against threshold (default 80%+ similar)
+            if (similarity >= params.usernameThreshold) {
+              const key = [name1, name2].sort().join('|');
+              if (!usernameGroups.has(key)) usernameGroups.set(key, new Set());
+              usernameGroups.get(key).add(id1);
+              usernameGroups.get(key).add(id2);
+            }
+          }
+        }
+
         let similarUsernameCount = 0;
-        usernames.forEach(users => {
+        usernameGroups.forEach((users, key) => {
           if (users.size >= Math.max(3, Math.floor(12/sensitivity))) {
             users.forEach(u => results.suspiciousUsers.add(u));
             similarUsernameCount += users.size;
@@ -746,37 +1635,113 @@
         });
         results.indicators.similarUsernames = similarUsernameCount;
 
-        // 4) High-volume posting
+        // 4) High-volume posting with z-score normalization
         const minPosts = Math.max(5, Math.floor(25/sensitivity));
         results.indicators.highVolume = 0;
         postsByUser.forEach((posts, userId) => {
           if (posts.length >= minPosts) {
-            const ts = posts.map(p => p.timestamp).sort();
-            const span = ts[ts.length-1] - ts[0];
-            const postsPerDay = span>0 ? (posts.length / (span / 86400)) : posts.length;
-            if (postsPerDay > Math.max(10, 50/sensitivity)) results.suspiciousUsers.add(userId);
-            results.indicators.highVolume++;
+            const zScore = (posts.length - stats.posts.mean) / stats.posts.stdDev;
+            
+            // Flag if z-score exceeds threshold (default: 2 = 95th percentile)
+            if (zScore > params.zscoreThreshold) {
+              results.suspiciousUsers.add(userId);
+              results.indicators.highVolume++;
+            }
+          }
+        });
+        
+        // 5) Temporal burst detection
+        const bursts = detectTemporalBursts(postsByUser, timeWindow, params.burstPosts);
+        results.indicators.temporalBursts = bursts.length;
+        
+        // 6) Posting rhythm regularity & 24/7 activity
+        postsByUser.forEach((posts, userId) => {
+          // Check posting rhythm regularity
+          const rhythm = analyzePostingRhythm(posts, params.rhythmCV);
+          if (rhythm.regular) {
+            results.suspiciousUsers.add(userId);
+          }
+          
+          // Check 24/7 posting pattern
+          const nightPosting = analyzeNightPosting(posts, params.nightGap);
+          if (nightPosting.suspicious) {
+            results.suspiciousUsers.add(userId);
           }
         });
 
-        // 5) Duplicate captions
+        // 7) Semantic duplicate captions (AI-powered similarity)
+        let semanticGroups = [];
+        
+        if (params.semanticEnabled) {
+          // Only run if enabled (can be slow on large datasets)
+          const captionEmbeddings = new Map();
+          
+          for (const post of filteredData) {
+            const userId = post.data?.author?.id;
+            const caption = post.data?.desc || '';
+            if (!userId || caption.length < 20) continue;
+            
+            const embedding = await getEmbedding(caption);
+            captionEmbeddings.set(userId, { caption, embedding, userId });
+          }
+          
+          // Compare all pairs for semantic similarity
+          const embedArray = Array.from(captionEmbeddings.values());
+          for (let i = 0; i < embedArray.length; i++) {
+            for (let j = i + 1; j < embedArray.length; j++) {
+              const similarity = cosineSimilarity(embedArray[i].embedding, embedArray[j].embedding);
+              
+              // Check against threshold (default: 0.85 = very similar, paraphrased content)
+              if (similarity >= params.semanticThreshold) {
+                results.suspiciousUsers.add(embedArray[i].userId);
+                results.suspiciousUsers.add(embedArray[j].userId);
+                semanticGroups.push({ 
+                  users: [embedArray[i].userId, embedArray[j].userId],
+                  similarity: similarity.toFixed(3),
+                  captions: [embedArray[i].caption.slice(0, 50), embedArray[j].caption.slice(0, 50)]
+                });
+              }
+            }
+          }
+        }
+        
+        results.indicators.semanticDuplicates = semanticGroups.length;
+        
+        // 8) N-gram template captions
+        const captionPairs = [];
         const captions = new Map();
+
         filteredData.forEach(post => {
           const userId = post.data?.author?.id;
           const caption = post.data?.desc || '';
-          if (!userId || caption.length < 10) return;
-          const normalized = caption.toLowerCase().replace(/[^\w\s]/g,'').trim();
-          if (!captions.has(normalized)) captions.set(normalized, new Set());
-          captions.get(normalized).add(userId);
+          if (!userId || caption.length < 20) return;
+          
+          captions.set(userId, caption);
         });
-        let duplicateCaptionUsers = 0;
-        captions.forEach(users => {
-          if (users.size >= Math.max(2, Math.floor(8/sensitivity))) {
-            users.forEach(u => results.suspiciousUsers.add(u));
-            duplicateCaptionUsers += users.size;
+
+        const captionArray = Array.from(captions.entries());
+        for (let i = 0; i < captionArray.length; i++) {
+          for (let j = i + 1; j < captionArray.length; j++) {
+            const overlap = ngramOverlap(captionArray[i][1], captionArray[j][1]);
+            
+            // Check against threshold (default: 0.3 = 30% of 5-grams match, template detected)
+            if (overlap >= params.ngramThreshold) {
+              captionPairs.push({
+                users: [captionArray[i][0], captionArray[j][0]],
+                overlap: overlap
+              });
+              results.suspiciousUsers.add(captionArray[i][0]);
+              results.suspiciousUsers.add(captionArray[j][0]);
+            }
           }
-        });
-        results.indicators.duplicateCaptions = duplicateCaptionUsers;
+        }
+
+        results.indicators.templateCaptions = captionPairs.length;
+        results.indicators.duplicateCaptions = semanticGroups.length + captionPairs.length;
+        
+        // 9) Account creation clustering
+        const creationClusters = detectAccountCreationClusters(filteredData, 86400, params.clusterSize);
+        results.indicators.accountCreationClusters = creationClusters.length;
 
         // Build userId -> username lookup
         const userIdToName = new Map();
@@ -806,12 +1771,12 @@
             reasons.push(`Synchronized posting with: ${partners.join(', ')}${more}`);
           }
           
-          // Check identical hashtag sequences (with other users)
+          // Check rare hashtag sequences (TF-IDF weighted)
           const userPosts = filteredData.filter(p => p.data?.author?.id === userId);
           const hashtagPartners = [];
-          hashtagSequences.forEach((users, seq) => {
-            if (users.has(userId) && users.size >= Math.max(3, Math.floor(15/sensitivity))) {
-              const others = Array.from(users).filter(u => u !== userId).map(u => userIdToName.get(u) || u);
+          hashtagSequences.forEach((data, seq) => {
+            if (data.users.has(userId) && data.users.size >= Math.max(3, Math.floor(15/sensitivity))) {
+              const others = Array.from(data.users).filter(u => u !== userId).map(u => userIdToName.get(u) || u);
               hashtagPartners.push(...others);
             }
           });
@@ -819,53 +1784,113 @@
             score += 20;
             const display = hashtagPartners.slice(0, 5);
             const more = hashtagPartners.length > 5 ? ` and ${hashtagPartners.length - 5} more` : '';
-            reasons.push(`Identical hashtag sequences with: ${display.join(', ')}${more}`);
+            reasons.push(`Rare hashtag combinations with: ${display.join(', ')}${more}`);
           }
           
-          // Check high-volume posting
-          if (userPosts.length >= minPosts) {
-            const ts = userPosts.map(p => p.data?.createTime).filter(Boolean).sort();
-            if (ts.length > 1) {
-              const span = ts[ts.length-1] - ts[0];
-              const postsPerDay = span>0 ? (userPosts.length / (span / 86400)) : userPosts.length;
-              if (postsPerDay > Math.max(10, 50/sensitivity)) {
-                score += 15;
-                reasons.push(`High-volume posting (${postsPerDay.toFixed(1)} posts/day)`);
-              }
-            }
-          }
-          
-          // Check duplicate captions (with other users)
-          const captionPartners = [];
-          captions.forEach((users, caption) => {
-            if (users.has(userId) && users.size >= Math.max(2, Math.floor(8/sensitivity))) {
-              const others = Array.from(users).filter(u => u !== userId).map(u => userIdToName.get(u) || u);
-              captionPartners.push(...others);
-            }
-          });
-          if (captionPartners.length > 0) {
-            score += 20;
-            const display = captionPartners.slice(0, 5);
-            const more = captionPartners.length > 5 ? ` and ${captionPartners.length - 5} more` : '';
-            reasons.push(`Duplicate captions with: ${display.join(', ')}${more}`);
-          }
-          
-          // Check similar username pattern
-          const author = userPosts[0]?.data?.author;
-          if (author) {
-            const username = author.uniqueId || author.nickname || '';
-            const prefix = username.substring(0, Math.min(7, username.length));
-            if (prefix.length >= 4 && usernames.has(prefix) && usernames.get(prefix).size >= Math.max(3, Math.floor(12/sensitivity))) {
+          // Check similar username (Levenshtein distance)
+          usernameGroups.forEach((users, key) => {
+            if (users.has(userId) && users.size >= Math.max(3, Math.floor(12/sensitivity))) {
               score += 10;
-              const similarUsers = Array.from(usernames.get(prefix)).filter(u => u !== userId).map(u => userIdToName.get(u) || u);
+              const similarUsers = Array.from(users).filter(u => u !== userId).map(u => userIdToName.get(u) || u);
               const display = similarUsers.slice(0, 5);
               const more = similarUsers.length > 5 ? ` and ${similarUsers.length - 5} more` : '';
               reasons.push(`Similar username pattern with: ${display.join(', ')}${more}`);
             }
+          });
+          
+          // Check high-volume posting (z-score)
+          if (userPosts.length >= minPosts) {
+            const zScore = (userPosts.length - stats.posts.mean) / stats.posts.stdDev;
+            if (zScore > 2) {
+              score += 15;
+              reasons.push(`High-volume posting (z-score: ${zScore.toFixed(1)})`);
+            }
           }
+          
+          // Check temporal bursts
+          const userBursts = bursts.filter(b => b.userId === userId);
+          if (userBursts.length > 0) {
+            score += 15;
+            userBursts.forEach(burst => {
+              const timeDesc = timeWindow < 60 ? `${timeWindow} second${timeWindow !== 1 ? 's' : ''}` : 
+                               `${Math.floor(timeWindow/60)} minute${Math.floor(timeWindow/60) !== 1 ? 's' : ''}`;
+              reasons.push(`Posting burst: ${burst.count} posts in ${timeDesc}`);
+            });
+          }
+          
+          // Check posting rhythm regularity
+          const rhythm = analyzePostingRhythm(userPosts.map(p => ({ timestamp: p.data?.createTime })).filter(p => p.timestamp), params.rhythmCV);
+          if (rhythm.regular) {
+            score += 20;
+            reasons.push(`Highly regular posting rhythm (CV: ${(rhythm.cv * 100).toFixed(1)}%)`);
+          }
+          
+          // Check 24/7 posting
+          const nightPosting = analyzeNightPosting(userPosts.map(p => ({ timestamp: p.data?.createTime })).filter(p => p.timestamp), params.nightGap);
+          if (nightPosting.suspicious) {
+            score += 25;
+            reasons.push(`24/7 posting pattern (max gap: ${Math.floor(nightPosting.avgMaxGap / 3600)}h)`);
+          }
+          
+          // Check semantic duplicate captions
+          semanticGroups.forEach(group => {
+            if (group.users.includes(userId)) {
+              score += 25;
+              const partner = group.users.find(u => u !== userId);
+              const partnerName = userIdToName.get(partner) || partner;
+              reasons.push(`Semantically similar captions (${group.similarity}) with ${partnerName}`);
+            }
+          });
+          
+          // Check n-gram template captions
+          captionPairs.forEach(pair => {
+            if (pair.users.includes(userId)) {
+              score += 20;
+              const partner = pair.users.find(u => u !== userId);
+              const partnerName = userIdToName.get(partner) || partner;
+              reasons.push(`Template caption (${(pair.overlap * 100).toFixed(0)}% overlap) with ${partnerName}`);
+            }
+          });
+          
+          // Check account creation clusters
+          creationClusters.forEach(cluster => {
+            if (cluster.has(userId)) {
+              score += 30;
+              reasons.push(`Account created with ${cluster.size - 1} others within 24 hours`);
+            }
+          });
           
           results.userScores.set(userId, score);
           results.userReasons.set(userId, reasons);
+        });
+        
+        // Cross-indicator bonus multiplier (multiple indicators = exponentially more suspicious)
+        results.suspiciousUsers.forEach(userId => {
+          const reasons = results.userReasons.get(userId) || [];
+          const numIndicators = reasons.length;
+          let baseScore = results.userScores.get(userId) || 0;
+          
+          // Multiplicative bonus for multiple indicators
+          if (numIndicators >= 2) {
+            const multiplier = 1 + (params.crossMultiplier * numIndicators);
+            baseScore = Math.min(100, baseScore * multiplier);
+            results.userScores.set(userId, Math.round(baseScore));
+          }
+          
+          // Extra bonus for specific dangerous combinations
+          const reasonText = reasons.join(' ').toLowerCase();
+          
+          if (reasonText.includes('similar username') && reasonText.includes('created with')) {
+            // Username similarity + account creation = bot farm
+            const currentScore = results.userScores.get(userId);
+            results.userScores.set(userId, Math.min(100, currentScore + 20));
+          }
+          
+          if (reasonText.includes('synchronized') && reasonText.includes('regular posting')) {
+            // Synchronization + regularity = automated coordination
+            const currentScore = results.userScores.get(userId);
+            results.userScores.set(userId, Math.min(100, currentScore + 15));
+          }
         });
 
         cibDetection = results;
@@ -891,13 +1916,32 @@
     }
 
     function displayCIBResults(results) {
+      const params = getCibParams(); // Check if semantic is enabled
+      
       let html = '<ul class="metrics-list">';
       html += `<li><span class="metric-name">Suspicious Accounts</span><span class="metric-value cib-score">${results.suspiciousUsers.size}</span></li>`;
       html += `<li><span class="metric-name">Synchronized Posting</span><span class="metric-value">${results.indicators.synchronized} pairs</span></li>`;
-      html += `<li><span class="metric-name">Identical Hashtags</span><span class="metric-value">${results.indicators.identicalHashtags} users</span></li>`;
+      html += `<li><span class="metric-name">Rare Hashtag Combos</span><span class="metric-value">${results.indicators.identicalHashtags} users</span></li>`;
       html += `<li><span class="metric-name">Similar Usernames</span><span class="metric-value">${results.indicators.similarUsernames} users</span></li>`;
       html += `<li><span class="metric-name">High Volume Posting</span><span class="metric-value">${results.indicators.highVolume} users</span></li>`;
-      html += `<li><span class="metric-name">Duplicate Captions</span><span class="metric-value">${results.indicators.duplicateCaptions} users</span></li>`;
+      
+      // New AI-powered indicators
+      if (results.indicators.semanticDuplicates > 0) {
+        html += `<li><span class="metric-name">🤖 Semantic Duplicates</span><span class="metric-value">${results.indicators.semanticDuplicates} pairs</span></li>`;
+      } else if (!params.semanticEnabled) {
+        html += `<li><span class="metric-name">🤖 Semantic Duplicates</span><span class="metric-value" style="color: #9ca3af;">disabled</span></li>`;
+      }
+      
+      if (results.indicators.temporalBursts) {
+        html += `<li><span class="metric-name">Posting Bursts</span><span class="metric-value">${results.indicators.temporalBursts} users</span></li>`;
+      }
+      if (results.indicators.templateCaptions) {
+        html += `<li><span class="metric-name">Template Captions</span><span class="metric-value">${results.indicators.templateCaptions} pairs</span></li>`;
+      }
+      if (results.indicators.accountCreationClusters) {
+        html += `<li><span class="metric-name">Account Creation Clusters</span><span class="metric-value">${results.indicators.accountCreationClusters} clusters</span></li>`;
+      }
+      
       html += '</ul>';
       cibResults.innerHTML = html;
       cibPanel.style.display = 'block';
@@ -909,12 +1953,22 @@
     function extractMentionNetwork(posts) {
       const nodeMap = new Map();
       const links = [];
+      
+      let debugCount = 0;
 
       posts.forEach(post => {
         const author = post.data?.author;
-        if (!author) return;
+        if (!author) {
+          console.log('Post missing author:', post.item_id);
+          return;
+        }
 
         const authorId = author.id;
+        if (!authorId) {
+          console.log('Author missing ID:', author);
+          return;
+        }
+        
         if (!nodeMap.has(authorId)) {
           nodeMap.set(authorId, {
             id: authorId,
@@ -925,18 +1979,31 @@
           });
         }
         const mentions = post.data?.textExtra?.filter(t => t.type === 0) || [];
+        
+        // Debug first few posts
+        if (debugCount < 3 && mentions.length > 0) {
+          console.log(`Post ${post.item_id}: authorId=${authorId}, ${mentions.length} mentions`, mentions.map(m => `${m.userUniqueId}(${m.userId})`));
+          debugCount++;
+        }
+        
         mentions.forEach(mention => {
-          if (!nodeMap.has(mention.userId)) {
-            nodeMap.set(mention.userId, {
-              id: mention.userId,
-              label: mention.userUniqueId || String(mention.userId),
-              type: 'user', followers: 0
+          // Use userId if available, otherwise create ID from username
+          const mentionId = mention.userId || `user_${mention.userUniqueId}`;
+          if (!mentionId || mentionId === 'user_undefined') return; // Skip invalid mentions
+          
+          if (!nodeMap.has(mentionId)) {
+            nodeMap.set(mentionId, {
+              id: mentionId,
+              label: mention.userUniqueId || String(mentionId),
+              type: 'user', 
+              followers: 0
             });
           }
-          links.push({ source: authorId, target: mention.userId, postId: post.item_id });
+          links.push({ source: authorId, target: mentionId, postId: post.item_id });
         });
       });
 
+      console.log(`Mention network: ${nodeMap.size} nodes, ${links.length} links`);
       return { nodes: Array.from(nodeMap.values()), links };
     }
 
@@ -960,6 +2027,8 @@
           }
         }
       });
+      
+      console.log(`Co-hashtag network: ${nodeMap.size} nodes, ${linkMap.size} links`);
       return { nodes: Array.from(nodeMap.values()), links: Array.from(linkMap.values()) };
     }
 
@@ -1221,6 +2290,19 @@
         document.getElementById('stat-suspicious').textContent = '0';
 
         cibPanel.style.display = 'none';
+
+        // Check if network is empty
+        if (network.nodes.length === 0 || network.links.length === 0) {
+          loading.classList.remove('active');
+          loadingText.textContent = `No ${networkType === 'mention' ? 'mentions' : 
+                                      networkType === 'coHashtag' ? 'co-hashtags' : 
+                                      networkType === 'hashtag' ? 'hashtags' : 
+                                      networkType === 'userHashtag' ? 'user-hashtag connections' : 
+                                      networkType === 'photoTag' ? 'photo tags' : 
+                                      'location connections'} found in this dataset. Try a different network type.`;
+          setTimeout(() => { loadingText.textContent = ''; }, 5000);
+          return;
+        }
 
         // Build adjacency (for degree/hover-neighbor glow) and an id->node map
         buildAdjacency(graphData);
@@ -1633,8 +2715,9 @@
         edges.forEach(edge => {
           if (!edge.source || !edge.target) return;
           
-          const source = window.nodes.find(n => n.id === edge.source);
-          const target = window.nodes.find(n => n.id === edge.target);
+          // Use idToNode map for better performance (optimization)
+          const source = idToNode.get(edge.source);
+          const target = idToNode.get(edge.target);
           if (!source || !target) return;
           
           // Create line segment
@@ -1829,6 +2912,61 @@
         this.canvas.parentNode.appendChild(overlayCanvas);
       }
 
+      renderArrows(edges, width, height) {
+        // Render arrows on overlay for GPU mode (WebGL arrows are complex)
+        const overlayCanvas = document.createElement('canvas');
+        overlayCanvas.width = width;
+        overlayCanvas.height = height;
+        overlayCanvas.style.position = 'absolute';
+        overlayCanvas.style.top = '0';
+        overlayCanvas.style.left = '0';
+        overlayCanvas.style.pointerEvents = 'none';
+        overlayCanvas.style.zIndex = '0.5';
+        
+        const ctx = overlayCanvas.getContext('2d');
+        if (!ctx) return;
+        
+        ctx.save();
+        edges.forEach(edge => {
+          const s = idToNode.get(edge.source);
+          const t = idToNode.get(edge.target);
+          if (!s || !t) return;
+          
+          const angle = Math.atan2(t.y - s.y, t.x - s.x);
+          const targetRadius = nodeSize(t);
+          const arrowSize = Math.min(8, targetRadius * 0.6);
+          const arrowX = t.x - Math.cos(angle) * (targetRadius + 2);
+          const arrowY = t.y - Math.sin(angle) * (targetRadius + 2);
+          
+          const w = edge.weight || 1;
+          ctx.globalAlpha = Math.min(0.3 + w * 0.1, 0.8);
+          ctx.fillStyle = '#d1d5db';
+          ctx.beginPath();
+          ctx.moveTo(arrowX, arrowY);
+          ctx.lineTo(
+            arrowX - arrowSize * Math.cos(angle - Math.PI / 6),
+            arrowY - arrowSize * Math.sin(angle - Math.PI / 6)
+          );
+          ctx.lineTo(
+            arrowX - arrowSize * Math.cos(angle + Math.PI / 6),
+            arrowY - arrowSize * Math.sin(angle + Math.PI / 6)
+          );
+          ctx.closePath();
+          ctx.fill();
+        });
+        ctx.restore();
+        
+        // Replace any existing arrow overlay
+        const existingOverlay = this.canvas.parentNode.querySelector('.arrow-overlay');
+        if (existingOverlay) {
+          existingOverlay.remove();
+        }
+        
+        // Add the overlay
+        overlayCanvas.className = 'arrow-overlay';
+        this.canvas.parentNode.appendChild(overlayCanvas);
+      }
+
       cleanup() {
         if (!this.initialized) return;
         
@@ -1846,18 +2984,26 @@
     // =========================
     function applyForceLayout() {
       const centerX = canvas.width / 2, centerY = canvas.height / 2;
+      const maxRepulsionDist = 300; // Skip repulsion for distant nodes (optimization)
+      
       nodes.forEach(node => {
         nodes.forEach(other => {
           if (node === other) return;
           const dx = node.x - other.x, dy = node.y - other.y;
-          const dist = Math.sqrt(dx*dx + dy*dy) || 1;
-          const force = Math.min(1000 / (dist*dist), 10);
+          const distSq = dx*dx + dy*dy;
+          
+          // Skip repulsion for very distant nodes (optimization)
+          if (distSq > maxRepulsionDist * maxRepulsionDist) return;
+          
+          const dist = Math.sqrt(distSq) || 1;
+          const force = Math.min(1000 / distSq, 10);
           node.vx += (dx / dist) * force;
           node.vy += (dy / dist) * force;
         });
         graphData.links.forEach(link => {
-          const source = nodes.find(n => n.id === link.source);
-          const target = nodes.find(n => n.id === link.target);
+          // Use idToNode map for better performance (optimization)
+          const source = idToNode.get(link.source);
+          const target = idToNode.get(link.target);
           if (!source || !target) return;
           if (node === source) {
             const dx = target.x - source.x, dy = target.y - source.y;
@@ -1894,6 +3040,9 @@
 
       // Update global nodes reference for WebGL renderer
       window.nodes = nodes;
+      
+      // Rebuild idToNode map with positioned nodes (fix for highlight bug)
+      idToNode = new Map(nodes.map(n => [n.id, n]));
 
       // CRITICAL FIX: Initialize GPU renderer FIRST, before any 2D context creation
       // This prevents the "Canvas already has a 2D context" error
@@ -1971,7 +3120,8 @@
       if (gpuRenderer && gpuRenderer.initialized) {
         const success = gpuRenderer.render(nodes, graphData.links, canvas.width, canvas.height);
         if (success) {
-          // Render labels using Canvas 2D (text rendering in WebGL is complex)
+          // Render arrows and labels using Canvas 2D overlays
+          gpuRenderer.renderArrows(graphData.links, canvas.width, canvas.height);
           gpuRenderer.renderLabels(nodes, canvas.width, canvas.height);
           updateRenderingIndicator(true);
           return;
@@ -1986,7 +3136,7 @@
     function cleanupOverlays() {
       // Remove any existing overlay canvases
       const container = canvas.parentNode;
-      const overlays = container.querySelectorAll('.text-overlay, .highlight-overlay, .search-highlight-overlay, .hover-overlay');
+      const overlays = container.querySelectorAll('.text-overlay, .arrow-overlay, .highlight-overlay, .search-highlight-overlay, .hover-overlay');
       overlays.forEach(overlay => overlay.remove());
     }
 
@@ -2015,16 +3165,38 @@
       
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // edges
+      // edges (use idToNode map instead of find for better performance)
       graphData.links.forEach(link => {
-        const s = nodes.find(n => n.id === link.source);
-        const t = nodes.find(n => n.id === link.target);
+        const s = idToNode.get(link.source);
+        const t = idToNode.get(link.target);
         if (!s || !t) return;
         const w = link.weight || 1;
         ctx.lineWidth = Math.min(1 + w*0.5, 5);
         ctx.strokeStyle = '#d1d5db';
         ctx.globalAlpha = Math.min(0.3 + w*0.1, 0.8);
         ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y); ctx.stroke();
+        
+        // Draw arrowhead to show direction
+        const angle = Math.atan2(t.y - s.y, t.x - s.x);
+        const targetRadius = nodeSize(t);
+        const arrowSize = Math.min(8, targetRadius * 0.6);
+        const arrowX = t.x - Math.cos(angle) * (targetRadius + 2);
+        const arrowY = t.y - Math.sin(angle) * (targetRadius + 2);
+        
+        ctx.fillStyle = '#d1d5db';
+        ctx.beginPath();
+        ctx.moveTo(arrowX, arrowY);
+        ctx.lineTo(
+          arrowX - arrowSize * Math.cos(angle - Math.PI / 6),
+          arrowY - arrowSize * Math.sin(angle - Math.PI / 6)
+        );
+        ctx.lineTo(
+          arrowX - arrowSize * Math.cos(angle + Math.PI / 6),
+          arrowY - arrowSize * Math.sin(angle + Math.PI / 6)
+        );
+        ctx.closePath();
+        ctx.fill();
+        
         ctx.globalAlpha = 1;
       });
 
@@ -2149,8 +3321,9 @@
                              (link.target === node.id && nbs.has(link.source));
           if (!isConnected) return;
           
-          const s = nodes.find(n => n.id === link.source);
-          const t = nodes.find(n => n.id === link.target);
+          // Use idToNode map for better performance (optimization)
+          const s = idToNode.get(link.source);
+          const t = idToNode.get(link.target);
           if (!s || !t) return;
           
           const w = link.weight || 1;
@@ -2161,6 +3334,27 @@
           ctx.moveTo(s.x, s.y); 
           ctx.lineTo(t.x, t.y); 
           ctx.stroke();
+          
+          // Draw arrowhead on highlighted edge
+          const angle = Math.atan2(t.y - s.y, t.x - s.x);
+          const targetRadius = nodeSize(t);
+          const arrowSize = Math.min(10, targetRadius * 0.7);
+          const arrowX = t.x - Math.cos(angle) * (targetRadius + 2);
+          const arrowY = t.y - Math.sin(angle) * (targetRadius + 2);
+          
+          ctx.fillStyle = '#fbbf24';
+          ctx.beginPath();
+          ctx.moveTo(arrowX, arrowY);
+          ctx.lineTo(
+            arrowX - arrowSize * Math.cos(angle - Math.PI / 6),
+            arrowY - arrowSize * Math.sin(angle - Math.PI / 6)
+          );
+          ctx.lineTo(
+            arrowX - arrowSize * Math.cos(angle + Math.PI / 6),
+            arrowY - arrowSize * Math.sin(angle + Math.PI / 6)
+          );
+          ctx.closePath();
+          ctx.fill();
         });
         ctx.restore();
       }
@@ -2188,8 +3382,9 @@
                              (link.target === node.id && nbs.has(link.source));
           if (!isConnected) return;
           
-          const s = nodes.find(n => n.id === link.source);
-          const t = nodes.find(n => n.id === link.target);
+          // Use idToNode map for better performance (optimization)
+          const s = idToNode.get(link.source);
+          const t = idToNode.get(link.target);
           if (!s || !t) return;
           
           const w = link.weight || 1;
@@ -2200,6 +3395,27 @@
           tempCtx.moveTo(s.x, s.y); 
           tempCtx.lineTo(t.x, t.y); 
           tempCtx.stroke();
+          
+          // Draw arrowhead on highlighted edge
+          const angle = Math.atan2(t.y - s.y, t.x - s.x);
+          const targetRadius = nodeSize(t);
+          const arrowSize = Math.min(10, targetRadius * 0.7);
+          const arrowX = t.x - Math.cos(angle) * (targetRadius + 2);
+          const arrowY = t.y - Math.sin(angle) * (targetRadius + 2);
+          
+          tempCtx.fillStyle = '#fbbf24';
+          tempCtx.beginPath();
+          tempCtx.moveTo(arrowX, arrowY);
+          tempCtx.lineTo(
+            arrowX - arrowSize * Math.cos(angle - Math.PI / 6),
+            arrowY - arrowSize * Math.sin(angle - Math.PI / 6)
+          );
+          tempCtx.lineTo(
+            arrowX - arrowSize * Math.cos(angle + Math.PI / 6),
+            arrowY - arrowSize * Math.sin(angle + Math.PI / 6)
+          );
+          tempCtx.closePath();
+          tempCtx.fill();
         });
         tempCtx.restore();
       }
@@ -2343,13 +3559,26 @@
         let profileUrl, postUrl, platformIcon;
         if (platform === 'instagram') {
           profileUrl = a?.uniqueId ? `https://www.instagram.com/${a.uniqueId}` : null;
-          const postCode = p.data?.code || p.data?.pk;
-          postUrl = postCode ? `https://www.instagram.com/p/${postCode}` : null;
+          // Construct Instagram URL from code (and optionally username)
+          const postCode = p?.data?.code || p?.code || p?.data?.pk;
+          const username = a?.uniqueId || p?.data?.user?.username;
+          postUrl = postCode ? (username ? `https://www.instagram.com/${username}/p/${postCode}/` : `https://www.instagram.com/p/${postCode}/`) : null;
           platformIcon = '📷';
         } else if (platform === 'tiktok') {
           profileUrl = a?.uniqueId ? `https://www.tiktok.com/@${a.uniqueId}` : null;
-          postUrl = p?.data?.webVideoUrl || p?.data?.shareUrl || null;
+          // Construct TikTok URL from username and video ID
+          const username = a?.uniqueId;
+          const videoId = p?.data?.id || p?.id;
+          postUrl = (username && videoId) ? `https://www.tiktok.com/@${username}/video/${videoId}` : 
+                    (p?.tiktok_url || p?.data?.tiktok_url || p?.data?.webVideoUrl || p?.data?.shareUrl || null);
           platformIcon = '🎵';
+        } else if (platform === 'twitter') {
+          profileUrl = a?.uniqueId ? `https://x.com/${a.uniqueId}` : null;
+          // Construct Twitter/X URL from username and tweet ID
+          const username = a?.uniqueId;
+          const tweetId = p?.data?.id || p?.id;
+          postUrl = (username && tweetId) ? `https://x.com/${username}/status/${tweetId}` : null;
+          platformIcon = '🐦';
         } else {
           profileUrl = null;
           postUrl = null;
@@ -2364,12 +3593,16 @@
         const location = p?.data?._instagram?.location;
         const locationText = location ? ` · 📍 ${location.name}` : '';
         
+        const postLink = postUrl 
+          ? `<a href="${postUrl}" target="_blank" rel="noopener" style="color:#059669; text-decoration:underline; font-weight:600;">🔗 view post</a>`
+          : `<span style="color:#9ca3af; font-size:0.75rem;">no link available</span>`;
+        
         return `<div style="padding:.6rem .6rem; border:1px solid #eee; border-radius:8px; margin:.45rem 0;">
-          <div style="font-weight:600">${platformIcon} ${a.uniqueId ? '@'+a.uniqueId : '(unknown user)'} 
-            ${profileUrl?` · <a href="${profileUrl}" target="_blank" rel="noopener" style="color:#2563eb; text-decoration:none;">profile</a>`:''}
-            ${postUrl ? ` · <a href="${postUrl}" target="_blank" rel="noopener" style="color:#059669; text-decoration:none;">view post</a>`:''}
+          <div style="display:flex; justify-content:space-between; align-items:start; gap:0.5rem;">
+            <div style="font-weight:600; flex:1;">${platformIcon} ${a.uniqueId ? '@'+a.uniqueId : '(unknown user)'}</div>
+            <div style="flex-shrink:0;">${postLink}</div>
           </div>
-          <div style="opacity:.95">${cap}${cap.length===220?'…':''}</div>
+          <div style="opacity:.95; margin-top:0.25rem;">${cap}${cap.length===220?'…':''}</div>
           <div style="opacity:.7; margin-top:.2rem">time: ${t} · engagement: ${eng.toLocaleString()}${locationText}</div>
         </div>`;
       }).join('');
@@ -2456,6 +3689,20 @@
     // Communities button
     // =========================
     cibBtn.addEventListener('click', detectCIB);
+    
+    // CIB Advanced Settings handlers
+    cibSettingsBtn.addEventListener('click', () => {
+      cibSettingsPanel.style.display = cibSettingsPanel.style.display === 'none' ? 'block' : 'none';
+    });
+    
+    closeCibSettings.addEventListener('click', () => {
+      cibSettingsPanel.style.display = 'none';
+    });
+    
+    resetCibParamsBtn.addEventListener('click', () => {
+      resetCibParams();
+      alert('CIB parameters reset to default values');
+    });
 
     detectBtn.addEventListener('click', () => {
       if (!graphData || graphData.nodes.length === 0) return;
@@ -2588,6 +3835,161 @@
         <p>${commNote}</p>
       `;
     }
+  </script>
+
+  <!-- Help Modal -->
+  <div id="help-modal" class="help-modal">
+    <div class="help-content" onclick="event.stopPropagation()">
+      <div class="help-header">
+        <div class="help-title">📚 SchuimSurfer User Guide</div>
+        <button class="help-close" id="help-close">✕</button>
+      </div>
+      <div class="help-body" id="help-body">
+        <!-- README content will be loaded here -->
+        <p style="text-align: center; color: #6b7280;">Loading guide...</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Help Modal functionality
+    const helpBtn = document.getElementById('help-btn');
+    const helpModal = document.getElementById('help-modal');
+    const helpClose = document.getElementById('help-close');
+    const helpBody = document.getElementById('help-body');
+
+    // Simple markdown to HTML converter (basic features)
+    function markdownToHtml(md) {
+      let html = md;
+      
+      // Headers
+      html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>');
+      html = html.replace(/^## (.*$)/gim, '<h2>$1</h2>');
+      html = html.replace(/^# (.*$)/gim, '<h1>$1</h1>');
+      html = html.replace(/^#### (.*$)/gim, '<h4>$1</h4>');
+      
+      // Bold
+      html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+      
+      // Italic  
+      html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+      
+      // Code inline
+      html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+      
+      // Links
+      html = html.replace(/\[([^\]]+)\]\(([^\)]+)\)/g, '<a href="$2">$1</a>');
+      
+      // Horizontal rules
+      html = html.replace(/^---$/gim, '<hr>');
+      
+      // Lists (basic)
+      html = html.replace(/^\- (.*$)/gim, '<li>$1</li>');
+      html = html.replace(/^(\d+)\. (.*$)/gim, '<li>$2</li>');
+      
+      // Wrap consecutive <li> in <ul>
+      html = html.replace(/(<li>.*<\/li>\n?)+/g, function(match) {
+        return '<ul>' + match + '</ul>';
+      });
+      
+      // Paragraphs
+      html = html.split('\n\n').map(para => {
+        para = para.trim();
+        if (!para) return '';
+        if (para.startsWith('<h') || para.startsWith('<ul') || para.startsWith('<hr') || para.startsWith('<pre')) {
+          return para;
+        }
+        return '<p>' + para + '</p>';
+      }).join('\n');
+      
+      // Code blocks
+      html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+      
+      return html;
+    }
+
+    // Load README content
+    async function loadReadme() {
+      try {
+        const response = await fetch('README.md');
+        const markdown = await response.text();
+        const html = markdownToHtml(markdown);
+        helpBody.innerHTML = html;
+      } catch (error) {
+        console.error('Failed to load README:', error);
+        helpBody.innerHTML = `
+          <h1>SchuimSurfer User Guide</h1>
+          <p><strong>Unable to load README.md file.</strong> Please ensure README.md is in the same directory as this HTML file.</p>
+          <h2>Quick Start</h2>
+          <p>1. Upload your social media data (JSON format)<br>
+          2. Select network type from dropdown<br>
+          3. Click "Detect Communities" to identify clusters<br>
+          4. Click "Detect Coordinated Behavior" to run CIB analysis<br>
+          5. Click nodes to see details</p>
+          <h2>CIB Detection Methods</h2>
+          <ul>
+            <li>🤖 <strong>Semantic Similarity</strong> - AI-powered caption matching</li>
+            <li>⏱️ <strong>Synchronized Posting</strong> - Coordinated timing detection</li>
+            <li>🏷️ <strong>TF-IDF Hashtags</strong> - Rare hashtag combinations</li>
+            <li>👤 <strong>Username Patterns</strong> - Similar account names</li>
+            <li>📈 <strong>Z-Score Analysis</strong> - Statistical outlier detection</li>
+            <li>💥 <strong>Temporal Bursts</strong> - Activity spikes</li>
+            <li>🎵 <strong>Posting Rhythm</strong> - Bot-like regularity</li>
+            <li>🌙 <strong>24/7 Activity</strong> - No sleep gaps</li>
+            <li>📝 <strong>N-gram Templates</strong> - Caption templates</li>
+            <li>🏭 <strong>Account Clustering</strong> - Batch creation detection</li>
+          </ul>
+          <h2>Advanced Settings</h2>
+          <p>Click "Advanced CIB Settings" to fine-tune detection parameters:</p>
+          <ul>
+            <li><strong>Semantic Similarity</strong> (0.85) - AI caption threshold</li>
+            <li><strong>N-gram Overlap</strong> (0.3) - Template detection</li>
+            <li><strong>Username Similarity</strong> (0.8) - Name matching</li>
+            <li><strong>TF-IDF Threshold</strong> (0.5) - Rare hashtag sensitivity</li>
+            <li><strong>Z-Score Threshold</strong> (2) - Volume outliers</li>
+            <li><strong>Burst Min Posts</strong> (5) - Burst trigger</li>
+            <li><strong>Rhythm CV</strong> (0.1) - Regularity threshold</li>
+            <li><strong>Night Gap</strong> (7200s) - 24/7 detection</li>
+            <li><strong>Cluster Size</strong> (5) - Account creation groups</li>
+            <li><strong>Cross-Indicator Bonus</strong> (0.3) - Score multiplier</li>
+          </ul>
+          <h2>Important Notes</h2>
+          <p><strong>⚠️ These are indicators, not proof.</strong> Always verify findings manually and consider context.</p>
+          <p><strong>Privacy:</strong> All processing happens in your browser. No data is sent to servers.</p>
+          <p><strong>Legitimate Coordination:</strong> Activist campaigns, fan communities, and event promotions may trigger detection. Context matters!</p>
+        `;
+      }
+    }
+
+    // Open modal
+    helpBtn.addEventListener('click', () => {
+      helpModal.classList.add('active');
+      if (helpBody.innerHTML.includes('Loading guide')) {
+        loadReadme();
+      }
+    });
+
+    // Close modal
+    helpClose.addEventListener('click', () => {
+      helpModal.classList.remove('active');
+    });
+
+    // Close on overlay click
+    helpModal.addEventListener('click', () => {
+      helpModal.classList.remove('active');
+    });
+
+    // Prevent closing when clicking content
+    document.querySelector('.help-content').addEventListener('click', (e) => {
+      e.stopPropagation();
+    });
+
+    // Close on Escape key
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && helpModal.classList.contains('active')) {
+        helpModal.classList.remove('active');
+      }
+    });
   </script>
 </body>
 </html>
