@@ -45,9 +45,32 @@ export async function getEmbeddings(texts, { batchSize = DEFAULT_BATCH_SIZE } = 
     const batchTexts = batch.map(item => item.text);
     // Xenova pipelines accept batched input as an array of strings.
     const output = await model(batchTexts, { pooling: 'mean', normalize: true });
-    const embeddings = Array.isArray(output)
-      ? output.map(entry => Array.from(entry.data))
-      : (output?.data ? [Array.from(output.data)] : []);
+
+    let embeddings = [];
+
+    if (Array.isArray(output)) {
+      embeddings = output.map(entry => Array.from(entry.data));
+    } else if (output?.data) {
+      const { data, dims } = output;
+
+      if (Array.isArray(dims) && dims.length === 2 && dims[0] > 1) {
+        const [batchCount, featureDim] = dims;
+
+        if (batchCount !== batch.length) {
+          throw new Error(
+            `Embedding tensor batch (${batchCount}) does not match request size (${batch.length})`
+          );
+        }
+
+        for (let row = 0; row < batchCount; row++) {
+          const start = row * featureDim;
+          const end = start + featureDim;
+          embeddings.push(Array.from(data.slice(start, end)));
+        }
+      } else {
+        embeddings = [Array.from(data)];
+      }
+    }
 
     if (embeddings.length !== batch.length) {
       throw new Error('Embedding batch size mismatch');
