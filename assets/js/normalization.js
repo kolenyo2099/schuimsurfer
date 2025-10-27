@@ -23,7 +23,7 @@ function extractMentionsFromText(text) {
   }));
 }
 
-function normalizePost(post) {
+export function normalizePost(post) {
   const platform = detectPlatform(post);
   const normalized = { ...post, platform };
 
