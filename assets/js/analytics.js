@@ -255,23 +255,20 @@ export function detectTemporalBursts(postsByUser, timeWindow, minPosts = 5) {
 
   postsByUser.forEach((posts, userId) => {
     const timestamps = posts.map(p => p.timestamp).sort((a, b) => a - b);
+    let left = 0;
 
-    for (let i = 0; i < timestamps.length; i++) {
-      const windowEnd = timestamps[i] + timeWindow;
-      let postsInWindow = 0;
-      let j = i;
-
-      while (j < timestamps.length && timestamps[j] < windowEnd) {
-        postsInWindow++;
-        j++;
+    for (let right = 0; right < timestamps.length; right++) {
+      while (left <= right && (timestamps[right] - timestamps[left]) >= timeWindow) {
+        left++;
       }
 
-      if (postsInWindow >= minPosts) {
+      const windowCount = right - left + 1;
+      if (windowCount >= minPosts) {
         bursts.push({
           userId,
-          time: timestamps[i],
-          count: postsInWindow,
-          timestamps: timestamps.slice(i, j),
+          time: timestamps[left],
+          count: windowCount,
+          timestamps: timestamps.slice(left, right + 1),
         });
         break;
       }
@@ -279,4 +276,47 @@ export function detectTemporalBursts(postsByUser, timeWindow, minPosts = 5) {
   });
 
   return bursts;
+}
+
+export function createRollingStatsState() {
+  return {
+    posts: 0,
+    totalEngagement: 0,
+    uniqueUsers: new Set(),
+    uniqueHashtags: new Set(),
+  };
+}
+
+export function updateRollingStats(state, post) {
+  if (!state) return;
+  state.posts += 1;
+
+  const engagement = (post.data?.stats?.diggCount || 0) +
+                     (post.data?.stats?.commentCount || 0);
+  state.totalEngagement += engagement;
+
+  const userId = post.data?.author?.id;
+  if (userId) {
+    state.uniqueUsers.add(userId);
+  }
+
+  const hashtags = post.data?.challenges || [];
+  hashtags.forEach(tag => {
+    if (tag?.title) {
+      state.uniqueHashtags.add(tag.title);
+    }
+  });
+}
+
+export function snapshotRollingStats(state) {
+  if (!state) {
+    return { posts: 0, users: 0, hashtags: 0, engagement: 0 };
+  }
+
+  return {
+    posts: state.posts,
+    users: state.uniqueUsers.size,
+    hashtags: state.uniqueHashtags.size,
+    engagement: state.posts ? Math.round(state.totalEngagement / state.posts) : 0,
+  };
 }
