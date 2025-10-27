@@ -255,23 +255,21 @@ export function detectTemporalBursts(postsByUser, timeWindow, minPosts = 5) {
 
   postsByUser.forEach((posts, userId) => {
     const timestamps = posts.map(p => p.timestamp).sort((a, b) => a - b);
+    if (timestamps.length === 0) return;
 
-    for (let i = 0; i < timestamps.length; i++) {
-      const windowEnd = timestamps[i] + timeWindow;
-      let postsInWindow = 0;
-      let j = i;
-
-      while (j < timestamps.length && timestamps[j] < windowEnd) {
-        postsInWindow++;
-        j++;
+    let start = 0;
+    for (let end = 0; end < timestamps.length; end++) {
+      while (start < end && (timestamps[end] - timestamps[start]) >= timeWindow) {
+        start++;
       }
 
-      if (postsInWindow >= minPosts) {
+      const windowSize = end - start + 1;
+      if (windowSize >= minPosts) {
         bursts.push({
           userId,
-          time: timestamps[i],
-          count: postsInWindow,
-          timestamps: timestamps.slice(i, j),
+          time: timestamps[start],
+          count: windowSize,
+          timestamps: timestamps.slice(start, end + 1),
         });
         break;
       }

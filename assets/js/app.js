@@ -1,19 +1,3 @@
-import { initEmbeddingModel, getEmbedding, cosineSimilarity } from './embeddings.js';
-import { normalizeRawData } from './normalization.js';
-import {
-  calculateStats,
-  filterData,
-  calculateDatasetStatistics,
-  calculateTFIDF,
-  getNGrams,
-  ngramOverlap,
-  levenshteinDistance,
-  analyzePostingRhythm,
-  analyzeNightPosting,
-  detectAccountCreationClusters,
-  detectTemporalBursts,
-} from './analytics.js';
-
 // =========================
 // Global state
 // =========================
@@ -25,6 +9,13 @@ let communities = null;
 let cibDetection = null;
 let animationFrame = null;
 let networkMetrics = null;
+let ingestionWorker = null;
+let analyticsWorker = null;
+let currentFilters = { minEngagement: 0 };
+let latestNetworkRequestId = 0;
+let latestCommunityRequestId = 0;
+let latestCibRequestId = 0;
+let ingestionStats = null;
 
 // Expose nodes globally for WebGL renderer access
 window.nodes = nodes;
@@ -102,6 +93,17 @@ function updateStatCards(statsData) {
   if (statElements.engagement) statElements.engagement.textContent = statsData.engagement ?? 0;
 }
 
+function ensureWorkers() {
+  if (!ingestionWorker) {
+    ingestionWorker = new Worker('./workers/ingestionWorker.js', { type: 'module' });
+    ingestionWorker.addEventListener('message', handleIngestionMessage);
+  }
+  if (!analyticsWorker) {
+    analyticsWorker = new Worker('./workers/analyticsWorker.js', { type: 'module' });
+    analyticsWorker.addEventListener('message', handleAnalyticsMessage);
+  }
+}
+
 // =========================
 // UI constants
 // =========================
@@ -136,63 +138,253 @@ timeWindowInput.addEventListener('input', (e) => {
 // =========================
 // File upload
 // =========================
-fileInput.addEventListener('change', async (e) => {
+fileInput.addEventListener('change', (e) => {
   const file = e.target.files[0];
   if (!file) return;
 
-  loading.classList.add('active');
-  loadingText.textContent = 'Loading data...';
+  ensureWorkers();
 
-  try {
-    const text = await file.text();
-    const lines = text.trim().split('\n');
-    const parsed = lines.map(line => JSON.parse(line));
-    
-    // Normalize data to handle both TikTok and Instagram
-    rawData = normalizeRawData(parsed);
+  rawData = [];
+  filteredData = [];
+  graphData = null;
+  communities = null;
+  cibDetection = null;
+  networkMetrics = null;
+  nodes.length = 0;
+  idToNode.clear();
+  adjacency.clear();
+  ingestionStats = null;
+  latestNetworkRequestId = 0;
+  latestCommunityRequestId = 0;
+  latestCibRequestId = 0;
 
-    // Detect platforms
-    const platformCounts = {};
-    rawData.forEach(p => {
-      const platform = p.platform || 'unknown';
-      platformCounts[platform] = (platformCounts[platform] || 0) + 1;
-    });
-    
-    const platformParts = [];
-    if (platformCounts.tiktok) platformParts.push(`🎵 TikTok (${platformCounts.tiktok})`);
-    if (platformCounts.instagram) platformParts.push(`📷 Instagram (${platformCounts.instagram})`);
-    if (platformCounts.twitter) platformParts.push(`🐦 Twitter/X (${platformCounts.twitter})`);
-    if (platformCounts.unknown) platformParts.push(`❓ Unknown (${platformCounts.unknown})`);
-    
-    const platformText = platformParts.join(' · ') || 'No data';
-    platformIndicator.textContent = `· ${platformText}`;
-    console.log(`Loaded ${rawData.length} posts from: ${platformText}`);
+  updateStatCards({ posts: 0, users: 0, hashtags: 0, engagement: 0 });
+  displayMetrics(null);
 
-    // set date bounds from data (both platforms use createTime after normalization)
-    const dates = rawData.map(p => p.data?.createTime).filter(Boolean);
-    if (dates.length > 0) {
-      const minDate = new Date(Math.min(...dates) * 1000);
-      const maxDate = new Date(Math.max(...dates) * 1000);
-      dateStart.value = minDate.toISOString().split('T')[0];
-      dateEnd.value = maxDate.toISOString().split('T')[0];
-    }
-
-    const statSummary = calculateStats(rawData);
-    updateStatCards(statSummary);
-    updateNetwork();
-    emptyState.style.display = 'none';
-    statsDiv.style.display = 'grid';
-    exportBtn.disabled = false;
-    detectBtn.disabled = false;
-    cibBtn.disabled = false;
-    cibSettingsBtn.disabled = false;
-    // CIB export buttons enabled after CIB detection runs
-  } catch (err) {
-    alert('Error parsing file: ' + err.message);
-  } finally {
-    loading.classList.remove('active');
+  if (analyticsWorker) {
+    analyticsWorker.postMessage({ type: 'reset' });
   }
+
+  cibPanel.style.display = 'none';
+  cibResults.innerHTML = '';
+  exportBtn.disabled = true;
+  exportCsvBtn.disabled = true;
+  exportReportBtn.disabled = true;
+  detectBtn.disabled = true;
+  cibBtn.disabled = true;
+  cibSettingsBtn.disabled = true;
+  platformIndicator.textContent = '';
+  if (statElements.suspicious) statElements.suspicious.textContent = '0';
+
+  loading.classList.add('active');
+  loadingText.textContent = 'Streaming data...';
+
+  ingestionWorker.postMessage({ type: 'ingest', file, chunkSize: 500 });
 });
+
+function handleIngestionMessage(event) {
+  const { type, posts, stats, platformCounts, timeBounds, message } = event.data || {};
+
+  switch (type) {
+    case 'chunk': {
+      if (Array.isArray(posts) && posts.length > 0) {
+        rawData.push(...posts);
+        if (analyticsWorker) {
+          analyticsWorker.postMessage({ type: 'appendPosts', posts });
+        }
+      }
+      if (stats) {
+        ingestionStats = {
+          posts: stats.posts,
+          users: stats.uniqueUsers,
+          hashtags: stats.uniqueHashtags,
+          engagement: stats.averageEngagement,
+        };
+        updateStatCards(ingestionStats);
+        loadingText.textContent = `Loaded ${stats.posts ?? rawData.length} posts...`;
+      }
+      break;
+    }
+    case 'done': {
+      if (stats) {
+        ingestionStats = {
+          posts: stats.posts,
+          users: stats.uniqueUsers,
+          hashtags: stats.uniqueHashtags,
+          engagement: stats.averageEngagement,
+        };
+        updateStatCards(ingestionStats);
+      }
+
+      if (Array.isArray(platformCounts)) {
+        const counts = Object.fromEntries(platformCounts);
+        const platformParts = [];
+        if (counts.tiktok) platformParts.push(`🎵 TikTok (${counts.tiktok})`);
+        if (counts.instagram) platformParts.push(`📷 Instagram (${counts.instagram})`);
+        if (counts.twitter) platformParts.push(`🐦 Twitter/X (${counts.twitter})`);
+        if (counts.unknown) platformParts.push(`❓ Unknown (${counts.unknown})`);
+        const platformText = platformParts.join(' · ') || 'No data';
+        platformIndicator.textContent = `· ${platformText}`;
+        console.log(`Loaded ${stats?.posts ?? rawData.length} posts from: ${platformText}`);
+      }
+
+      if (timeBounds) {
+        const { min, max } = timeBounds;
+        if (Number.isFinite(min)) {
+          const minDate = new Date(min * 1000);
+          dateStart.value = minDate.toISOString().split('T')[0];
+        } else {
+          dateStart.value = '';
+        }
+        if (Number.isFinite(max)) {
+          const maxDate = new Date(max * 1000);
+          dateEnd.value = maxDate.toISOString().split('T')[0];
+        } else {
+          dateEnd.value = '';
+        }
+      }
+
+      emptyState.style.display = 'none';
+      statsDiv.style.display = 'grid';
+      exportBtn.disabled = false;
+      detectBtn.disabled = false;
+      cibBtn.disabled = false;
+      cibSettingsBtn.disabled = false;
+
+      loadingText.textContent = 'Data ready. Building network...';
+      updateNetwork();
+      break;
+    }
+    case 'error':
+      loading.classList.remove('active');
+      loadingText.textContent = '';
+      alert(`Error ingesting data: ${message}`);
+      break;
+    default:
+      break;
+  }
+}
+
+function handleAnalyticsMessage(event) {
+  const { type } = event.data || {};
+
+  switch (type) {
+    case 'network': {
+      const { requestId, filtered = [], network = { nodes: [], links: [] }, metrics } = event.data;
+      if (requestId !== latestNetworkRequestId) return;
+
+      filteredData = filtered;
+      graphData = network;
+      networkMetrics = metrics;
+
+      nodes.length = 0;
+      nodes.push(...(graphData.nodes || []));
+      window.nodes = nodes;
+
+      if (statElements.nodes) statElements.nodes.textContent = graphData.nodes.length;
+      if (statElements.edges) statElements.edges.textContent = graphData.links.length;
+      if (statElements.density) statElements.density.textContent = metrics?.density ?? '0';
+      if (statElements.communities) statElements.communities.textContent = communities ? communities.count : '0';
+      if (statElements.suspicious) statElements.suspicious.textContent = cibDetection ? cibDetection.suspiciousUsers.size : '0';
+
+      cibPanel.style.display = 'none';
+      exportCsvBtn.disabled = true;
+      exportReportBtn.disabled = true;
+
+      const networkType = networkTypeSelect.value;
+      if (!graphData.nodes.length || !graphData.links.length) {
+        displayMetrics(null);
+        detectBtn.disabled = true;
+        cibBtn.disabled = true;
+        loading.classList.remove('active');
+        loadingText.textContent = `No ${networkType === 'mention' ? 'mentions' :
+          networkType === 'coHashtag' ? 'co-hashtags' :
+          networkType === 'hashtag' ? 'hashtags' :
+          networkType === 'userHashtag' ? 'user-hashtag connections' :
+          networkType === 'photoTag' ? 'photo tags' :
+          'location connections'} found in this dataset. Try a different network type.`;
+        setTimeout(() => { loadingText.textContent = ''; }, 5000);
+        return;
+      }
+
+      displayMetrics(networkMetrics);
+      detectBtn.disabled = false;
+      cibBtn.disabled = false;
+
+      buildAdjacency(graphData);
+      idToNode = new Map(graphData.nodes.map(n => [n.id, n]));
+      initializeVisualization();
+
+      loading.classList.remove('active');
+      loadingText.textContent = '';
+      updateCoach();
+      break;
+    }
+    case 'cib-results': {
+      const { requestId, results } = event.data;
+      if (requestId !== latestCibRequestId || !results) return;
+
+      cibDetection = {
+        suspiciousUsers: new Set(results.suspiciousUsers || []),
+        indicators: results.indicators || {},
+        userScores: new Map(results.userScores || []),
+        userReasons: new Map(results.userReasons || []),
+      };
+
+      displayCIBResults(cibDetection);
+
+      if (nodes.length > 0) {
+        nodes.forEach(node => {
+          const plainId = node.id.replace(/^u_/, '');
+          const isSuspicious = cibDetection.suspiciousUsers.has(node.id) || cibDetection.suspiciousUsers.has(plainId);
+          node.suspicious = isSuspicious;
+          node.cibScore = cibDetection.userScores.get(node.id) || cibDetection.userScores.get(plainId) || 0;
+          node.cibReasons = cibDetection.userReasons.get(node.id) || cibDetection.userReasons.get(plainId) || [];
+        });
+        drawNetwork();
+      }
+
+      if (statElements.suspicious) statElements.suspicious.textContent = cibDetection.suspiciousUsers.size;
+      exportCsvBtn.disabled = false;
+      exportReportBtn.disabled = false;
+
+      loading.classList.remove('active');
+      loadingText.textContent = '';
+      updateCoach();
+      break;
+    }
+    case 'communities': {
+      const { requestId, result } = event.data;
+      if (requestId !== latestCommunityRequestId) return;
+
+      communities = result
+        ? {
+            count: result.count,
+            communities: new Map(result.assignments || []),
+          }
+        : null;
+
+      if (statElements.communities) {
+        statElements.communities.textContent = communities ? communities.count : '0';
+      }
+      drawNetwork();
+      loading.classList.remove('active');
+      loadingText.textContent = '';
+      updateCoach();
+      break;
+    }
+    case 'error': {
+      const { message, context } = event.data;
+      loading.classList.remove('active');
+      loadingText.textContent = '';
+      console.error('Analytics worker error:', context, message);
+      alert(`Analytics error${context ? ` (${context})` : ''}: ${message}`);
+      break;
+    }
+    default:
+      break;
+  }
+}
 
 // =========================
 // CIB Advanced Parameters
@@ -456,420 +648,25 @@ function resetCibParams() {
 // CIB detection (heuristics)
 // =========================
 async function detectCIB() {
+  if (!analyticsWorker || filteredData.length === 0) {
+    alert('Please build a network before running CIB detection.');
+    return;
+  }
+
   loading.classList.add('active');
   loadingText.textContent = 'Analyzing coordinated behavior patterns...';
 
-  setTimeout(async () => {
-    const results = { suspiciousUsers: new Set(), indicators: {} };
-    
-    // Get advanced parameters (uses defaults if settings panel not customized)
-    const params = getCibParams();
-    
-    // Initialize embedding model only if semantic similarity is enabled
-    if (params.semanticEnabled) {
-      await initEmbeddingModel();
-    }
-    
-    // Calculate dataset statistics for adaptive thresholds
-      const stats = calculateDatasetStatistics(filteredData);
+  const params = getCibParams();
+  const requestId = ++latestCibRequestId;
+  const timeWindow = parseInt(timeWindowInput.value, 10) || 300;
 
-    // 1) Synchronized posting
-    const postsByUser = new Map();
-    filteredData.forEach(post => {
-      const userId = post.data?.author?.id;
-      const timestamp = post.data?.createTime;
-      if (!userId || !timestamp) return;
-      if (!postsByUser.has(userId)) postsByUser.set(userId, []);
-      postsByUser.get(userId).push({ timestamp, post });
-    });
-    const timeWindow = parseInt(timeWindowInput.value, 10);
-    const synchGroups = [];
-    const userTs = Array.from(postsByUser.entries());
-    for (let i=0;i<userTs.length;i++){
-      for (let j=i+1;j<userTs.length;j++){
-        const [u1, p1] = userTs[i]; const [u2, p2] = userTs[j];
-        let syncCount = 0;
-        p1.forEach(a => p2.forEach(b => { if (Math.abs(a.timestamp - b.timestamp) < timeWindow) syncCount++; }));
-        if (syncCount >= params.minSyncPosts) {
-          results.suspiciousUsers.add(u1); results.suspiciousUsers.add(u2); synchGroups.push({ u1, u2, syncCount });
-        }
-      }
-    }
-    results.indicators.synchronized = synchGroups.length;
-
-    // 2) Rare hashtag sequences with TF-IDF weighting
-    // Build hashtag usage map first
-    const userHashtagSets = new Map();
-    filteredData.forEach(post => {
-      const userId = post.data?.author?.id;
-      const hashtags = post.data?.challenges?.map(c => c.title) || [];
-      if (!userId || !hashtags.length) return;
-      
-      if (!userHashtagSets.has(userId)) userHashtagSets.set(userId, []);
-      hashtags.forEach(h => userHashtagSets.get(userId).push(h));
-    });
-
-    // Detect with TF-IDF weighting to find rare coordinated hashtag combinations
-    const hashtagSequences = new Map();
-    filteredData.forEach(post => {
-      const userId = post.data?.author?.id;
-      const hashtags = post.data?.challenges?.map(c => c.title) || [];
-      if (!userId || !hashtags.length) return;
-      
-      // Calculate TF-IDF score for this hashtag set
-      const allSets = Array.from(userHashtagSets.values()).map(arr => new Set(arr));
-      const tfidfScore = hashtags.reduce((sum, h) => {
-        return sum + calculateTFIDF(h, userHashtagSets.get(userId), allSets);
-      }, 0) / hashtags.length;
-      
-      // Only consider high TF-IDF sequences (rare combinations)
-      if (tfidfScore > params.tfidfThreshold) {
-        const key = hashtags.sort().join(',');
-        if (!hashtagSequences.has(key)) hashtagSequences.set(key, { users: new Set(), tfidf: tfidfScore });
-        hashtagSequences.get(key).users.add(userId);
-      }
-    });
-
-    // Flag groups using rare hashtag combinations
-    let identicalHashtagUsers = 0;
-    hashtagSequences.forEach((data, key) => {
-      if (data.users.size >= params.minHashtagGroupSize) {
-        data.users.forEach(u => results.suspiciousUsers.add(u));
-        identicalHashtagUsers += data.users.size;
-      }
-    });
-    results.indicators.identicalHashtags = identicalHashtagUsers;
-
-    // 3) Similar usernames with Levenshtein distance
-    const usernames = new Map();
-    filteredData.forEach(post => {
-      const author = post.data?.author;
-      if (!author) return;
-      const username = author.uniqueId || author.nickname || '';
-      const userId = author.id;
-      if (username.length < 4) return;
-      
-      usernames.set(userId, username);
-    });
-
-    const usernameGroups = new Map();
-    const usernameArray = Array.from(usernames.entries());
-
-    for (let i = 0; i < usernameArray.length; i++) {
-      for (let j = i + 1; j < usernameArray.length; j++) {
-        const [id1, name1] = usernameArray[i];
-        const [id2, name2] = usernameArray[j];
-        
-        const distance = levenshteinDistance(name1, name2);
-        const maxLen = Math.max(name1.length, name2.length);
-        const similarity = 1 - (distance / maxLen);
-        
-        // Check against threshold (default 80%+ similar)
-        if (similarity >= params.usernameThreshold) {
-          const key = [name1, name2].sort().join('|');
-          if (!usernameGroups.has(key)) usernameGroups.set(key, new Set());
-          usernameGroups.get(key).add(id1);
-          usernameGroups.get(key).add(id2);
-        }
-      }
-    }
-
-    let similarUsernameCount = 0;
-    usernameGroups.forEach((users, key) => {
-      if (users.size >= params.minUsernameGroupSize) {
-        users.forEach(u => results.suspiciousUsers.add(u));
-        similarUsernameCount += users.size;
-      }
-    });
-    results.indicators.similarUsernames = similarUsernameCount;
-
-    // 4) High-volume posting with z-score normalization
-    results.indicators.highVolume = 0;
-    postsByUser.forEach((posts, userId) => {
-      if (posts.length >= params.minHighVolumePosts) {
-        const zScore = (posts.length - stats.posts.mean) / stats.posts.stdDev;
-        
-        // Flag if z-score exceeds threshold (default: 2 = 95th percentile)
-        if (zScore > params.zscoreThreshold) {
-          results.suspiciousUsers.add(userId);
-          results.indicators.highVolume++;
-        }
-      }
-    });
-    
-    // 5) Temporal burst detection
-    const bursts = detectTemporalBursts(postsByUser, timeWindow, params.burstPosts);
-    results.indicators.temporalBursts = bursts.length;
-    
-    // 6) Posting rhythm regularity & 24/7 activity
-    postsByUser.forEach((posts, userId) => {
-      // Check posting rhythm regularity
-      const rhythm = analyzePostingRhythm(posts, params.rhythmCV);
-      if (rhythm.regular) {
-        results.suspiciousUsers.add(userId);
-      }
-      
-      // Check 24/7 posting pattern
-      const nightPosting = analyzeNightPosting(posts, params.nightGap);
-      if (nightPosting.suspicious) {
-        results.suspiciousUsers.add(userId);
-      }
-    });
-
-    // 7) Semantic duplicate captions (AI-powered similarity)
-    let semanticGroups = [];
-    
-    if (params.semanticEnabled) {
-      // Only run if enabled (can be slow on large datasets)
-      const captionEmbeddings = new Map();
-      
-      for (const post of filteredData) {
-        const userId = post.data?.author?.id;
-        const caption = post.data?.desc || '';
-        if (!userId || caption.length < 20) continue;
-        
-        const embedding = await getEmbedding(caption);
-        captionEmbeddings.set(userId, { caption, embedding, userId });
-      }
-      
-      // Compare all pairs for semantic similarity
-      const embedArray = Array.from(captionEmbeddings.values());
-      for (let i = 0; i < embedArray.length; i++) {
-        for (let j = i + 1; j < embedArray.length; j++) {
-          const similarity = cosineSimilarity(embedArray[i].embedding, embedArray[j].embedding);
-          
-          // Check against threshold (default: 0.85 = very similar, paraphrased content)
-          if (similarity >= params.semanticThreshold) {
-            results.suspiciousUsers.add(embedArray[i].userId);
-            results.suspiciousUsers.add(embedArray[j].userId);
-            semanticGroups.push({ 
-              users: [embedArray[i].userId, embedArray[j].userId],
-              similarity: similarity.toFixed(3),
-              captions: [embedArray[i].caption.slice(0, 50), embedArray[j].caption.slice(0, 50)]
-            });
-          }
-        }
-      }
-    }
-    
-    results.indicators.semanticDuplicates = semanticGroups.length;
-    
-    // 8) N-gram template captions
-    const captionPairs = [];
-    const captions = new Map();
-
-    filteredData.forEach(post => {
-      const userId = post.data?.author?.id;
-      const caption = post.data?.desc || '';
-      if (!userId || caption.length < 20) return;
-      
-      captions.set(userId, caption);
-    });
-
-    const captionArray = Array.from(captions.entries());
-    for (let i = 0; i < captionArray.length; i++) {
-      for (let j = i + 1; j < captionArray.length; j++) {
-        const overlap = ngramOverlap(captionArray[i][1], captionArray[j][1]);
-        
-        // Check against threshold (default: 0.3 = 30% of 5-grams match, template detected)
-        if (overlap >= params.ngramThreshold) {
-          captionPairs.push({
-            users: [captionArray[i][0], captionArray[j][0]],
-            overlap: overlap
-          });
-          results.suspiciousUsers.add(captionArray[i][0]);
-          results.suspiciousUsers.add(captionArray[j][0]);
-        }
-      }
-    }
-
-    results.indicators.templateCaptions = captionPairs.length;
-    results.indicators.duplicateCaptions = semanticGroups.length + captionPairs.length;
-    
-    // 9) Account creation clustering
-    // Note: Works for Twitter (has account creation dates) and TikTok (if data includes it)
-    // Instagram data typically doesn't include account creation dates, so clustering won't work for IG
-    const creationClusters = detectAccountCreationClusters(filteredData, 86400, params.clusterSize);
-    results.indicators.accountCreationClusters = creationClusters.length;
-    
-    if (creationClusters.length > 0) {
-      console.log(`Found ${creationClusters.length} account creation clusters`);
-    }
-
-    // Build userId -> username lookup
-    const userIdToName = new Map();
-    filteredData.forEach(post => {
-      const author = post.data?.author;
-      if (author?.id) {
-        userIdToName.set(author.id, author.uniqueId || author.nickname || `user_${author.id}`);
-      }
-    });
-    
-    // risk scores and reasons
-    results.userScores = new Map();
-    results.userReasons = new Map();
-    results.suspiciousUsers.forEach(userId => {
-      let score = 0;
-      let reasons = [];
-      
-      // Check synchronized posting
-      const userSyncGroups = synchGroups.filter(g => g.u1===userId || g.u2===userId);
-      if (userSyncGroups.length > 0) {
-        score += 25;
-        const partners = userSyncGroups.map(g => {
-          const partnerId = g.u1 === userId ? g.u2 : g.u1;
-          return userIdToName.get(partnerId) || partnerId;
-        }).slice(0, 5);
-        const more = userSyncGroups.length > 5 ? ` and ${userSyncGroups.length - 5} more` : '';
-        reasons.push(`Synchronized posting with: ${partners.join(', ')}${more}`);
-      }
-      
-      // Check rare hashtag sequences (TF-IDF weighted)
-      const userPosts = filteredData.filter(p => p.data?.author?.id === userId);
-      const hashtagPartners = [];
-      hashtagSequences.forEach((data, seq) => {
-        if (data.users.has(userId) && data.users.size >= params.minHashtagGroupSize) {
-          const others = Array.from(data.users).filter(u => u !== userId).map(u => userIdToName.get(u) || u);
-          hashtagPartners.push(...others);
-        }
-      });
-      if (hashtagPartners.length > 0) {
-        score += 20;
-        const display = hashtagPartners.slice(0, 5);
-        const more = hashtagPartners.length > 5 ? ` and ${hashtagPartners.length - 5} more` : '';
-        reasons.push(`Rare hashtag combinations with: ${display.join(', ')}${more}`);
-      }
-      
-      // Check similar username (Levenshtein distance)
-      usernameGroups.forEach((users, key) => {
-        if (users.has(userId) && users.size >= params.minUsernameGroupSize) {
-          score += 10;
-          const similarUsers = Array.from(users).filter(u => u !== userId).map(u => userIdToName.get(u) || u);
-          const display = similarUsers.slice(0, 5);
-          const more = similarUsers.length > 5 ? ` and ${similarUsers.length - 5} more` : '';
-          reasons.push(`Similar username pattern with: ${display.join(', ')}${more}`);
-        }
-      });
-      
-      // Check high-volume posting (z-score)
-      if (userPosts.length >= params.minHighVolumePosts) {
-        const zScore = (userPosts.length - stats.posts.mean) / stats.posts.stdDev;
-        if (zScore > params.zscoreThreshold) {
-          score += 15;
-          reasons.push(`High-volume posting (z-score: ${zScore.toFixed(1)})`);
-        }
-      }
-      
-      // Check temporal bursts
-      const userBursts = bursts.filter(b => b.userId === userId);
-      if (userBursts.length > 0) {
-        score += 15;
-        userBursts.forEach(burst => {
-          const timeDesc = timeWindow < 60 ? `${timeWindow} second${timeWindow !== 1 ? 's' : ''}` : 
-                           `${Math.floor(timeWindow/60)} minute${Math.floor(timeWindow/60) !== 1 ? 's' : ''}`;
-          reasons.push(`Posting burst: ${burst.count} posts in ${timeDesc}`);
-        });
-      }
-      
-      // Check posting rhythm regularity
-      const rhythm = analyzePostingRhythm(userPosts.map(p => ({ timestamp: p.data?.createTime })).filter(p => p.timestamp), params.rhythmCV);
-      if (rhythm.regular) {
-        score += 20;
-        reasons.push(`Highly regular posting rhythm (CV: ${(rhythm.cv * 100).toFixed(1)}%)`);
-      }
-      
-      // Check 24/7 posting
-      const nightPosting = analyzeNightPosting(userPosts.map(p => ({ timestamp: p.data?.createTime })).filter(p => p.timestamp), params.nightGap);
-      if (nightPosting.suspicious) {
-        score += 25;
-        reasons.push(`24/7 posting pattern (max gap: ${Math.floor(nightPosting.avgMaxGap / 3600)}h)`);
-      }
-      
-      // Check semantic duplicate captions
-      semanticGroups.forEach(group => {
-        if (group.users.includes(userId)) {
-          score += 25;
-          const partner = group.users.find(u => u !== userId);
-          const partnerName = userIdToName.get(partner) || partner;
-          reasons.push(`Semantically similar captions (${group.similarity}) with ${partnerName}`);
-        }
-      });
-      
-      // Check n-gram template captions
-      captionPairs.forEach(pair => {
-        if (pair.users.includes(userId)) {
-          score += 20;
-          const partner = pair.users.find(u => u !== userId);
-          const partnerName = userIdToName.get(partner) || partner;
-          reasons.push(`Template caption (${(pair.overlap * 100).toFixed(0)}% overlap) with ${partnerName}`);
-        }
-      });
-      
-      // Check account creation clusters
-      creationClusters.forEach(cluster => {
-        if (cluster.has(userId)) {
-          score += 30;
-          reasons.push(`Account created with ${cluster.size - 1} others within 24 hours`);
-        }
-      });
-      
-      results.userScores.set(userId, score);
-      results.userReasons.set(userId, reasons);
-    });
-    
-    // Cross-indicator bonus multiplier (multiple indicators = exponentially more suspicious)
-    results.suspiciousUsers.forEach(userId => {
-      const reasons = results.userReasons.get(userId) || [];
-      const numIndicators = reasons.length;
-      let baseScore = results.userScores.get(userId) || 0;
-      
-      // Multiplicative bonus for multiple indicators
-      if (numIndicators >= 2) {
-        const multiplier = 1 + (params.crossMultiplier * numIndicators);
-        baseScore = Math.min(100, baseScore * multiplier);
-        results.userScores.set(userId, Math.round(baseScore));
-      }
-      
-      // Extra bonus for specific dangerous combinations
-      const reasonText = reasons.join(' ').toLowerCase();
-      
-      if (reasonText.includes('similar username') && reasonText.includes('created with')) {
-        // Username similarity + account creation = bot farm
-        const currentScore = results.userScores.get(userId);
-        results.userScores.set(userId, Math.min(100, currentScore + 20));
-      }
-      
-      if (reasonText.includes('synchronized') && reasonText.includes('regular posting')) {
-        // Synchronization + regularity = automated coordination
-        const currentScore = results.userScores.get(userId);
-        results.userScores.set(userId, Math.min(100, currentScore + 15));
-      }
-    });
-
-    cibDetection = results;
-    displayCIBResults(results);
-
-    // mark nodes
-    if (nodes.length > 0) {
-      nodes.forEach(node => {
-        const plainId = node.id.replace(/^u_/,'');
-        if (results.suspiciousUsers.has(node.id) || results.suspiciousUsers.has(plainId)) {
-          node.suspicious = true;
-          node.cibScore = results.userScores.get(node.id) || results.userScores.get(plainId) || 0;
-          node.cibReasons = results.userReasons.get(node.id) || results.userReasons.get(plainId) || [];
-        }
-      });
-      drawNetwork();
-    }
-      if (statElements.suspicious) statElements.suspicious.textContent = results.suspiciousUsers.size;
-
-    // Enable CIB export buttons
-    exportCsvBtn.disabled = false;
-    exportReportBtn.disabled = false;
-
-    loading.classList.remove('active');
-    updateCoach();
-  }, 100);
+  analyticsWorker.postMessage({
+    type: 'run-cib',
+    requestId,
+    params,
+    timeWindow,
+    filters: currentFilters,
+  });
 }
 
 function displayCIBResults(results) {
@@ -904,269 +701,6 @@ function displayCIBResults(results) {
   cibPanel.style.display = 'block';
 }
 
-// =========================
-// Network extraction
-// =========================
-function extractMentionNetwork(posts) {
-  const nodeMap = new Map();
-  const links = [];
-  
-  let debugCount = 0;
-
-  posts.forEach(post => {
-    const author = post.data?.author;
-    if (!author) {
-      console.log('Post missing author:', post.item_id);
-      return;
-    }
-
-    const authorId = author.id;
-    if (!authorId) {
-      console.log('Author missing ID:', author);
-      return;
-    }
-    
-    if (!nodeMap.has(authorId)) {
-      nodeMap.set(authorId, {
-        id: authorId,
-        label: author.uniqueId || author.nickname,
-        verified: author.verified,
-        followers: post.data?.authorStats?.followerCount || 0,
-        type: 'user'
-      });
-    }
-    const mentions = post.data?.textExtra?.filter(t => t.type === 0) || [];
-    
-    // Debug first few posts
-    if (debugCount < 3 && mentions.length > 0) {
-      console.log(`Post ${post.item_id}: authorId=${authorId}, ${mentions.length} mentions`, mentions.map(m => `${m.userUniqueId}(${m.userId})`));
-      debugCount++;
-    }
-    
-    mentions.forEach(mention => {
-      // Use userId if available, otherwise create ID from username
-      const mentionId = mention.userId || `user_${mention.userUniqueId}`;
-      if (!mentionId || mentionId === 'user_undefined') return; // Skip invalid mentions
-      
-      if (!nodeMap.has(mentionId)) {
-        nodeMap.set(mentionId, {
-          id: mentionId,
-          label: mention.userUniqueId || String(mentionId),
-          type: 'user', 
-          followers: 0
-        });
-      }
-      links.push({ source: authorId, target: mentionId, postId: post.item_id });
-    });
-  });
-
-  console.log(`Mention network: ${nodeMap.size} nodes, ${links.length} links`);
-  return { nodes: Array.from(nodeMap.values()), links };
-}
-
-function extractCoHashtagNetwork(posts) {
-  const nodeMap = new Map();
-  const linkMap = new Map();
-
-  posts.forEach(post => {
-    const hashtags = post.data?.challenges || [];
-    hashtags.forEach(tag => {
-      const tagId = tag.id;
-      if (!nodeMap.has(tagId)) nodeMap.set(tagId, { id: tagId, label: tag.title, count: 0, type: 'hashtag' });
-      nodeMap.get(tagId).count++;
-    });
-    for (let i=0;i<hashtags.length;i++){
-      for (let j=i+1;j<hashtags.length;j++){
-        const source = hashtags[i].id, target = hashtags[j].id;
-        const key = [source, target].sort().join('-');
-        if (!linkMap.has(key)) linkMap.set(key, { source, target, weight: 0 });
-        linkMap.get(key).weight++;
-      }
-    }
-  });
-  
-  console.log(`Co-hashtag network: ${nodeMap.size} nodes, ${linkMap.size} links`);
-  return { nodes: Array.from(nodeMap.values()), links: Array.from(linkMap.values()) };
-}
-
-function extractUserHashtagNetwork(posts) {
-  const nodeMap = new Map();
-  const links = [];
-
-  posts.forEach(post => {
-    const author = post.data?.author;
-    if (!author) return;
-
-    const authorId = `u_${author.id}`;
-    if (!nodeMap.has(authorId)) {
-      nodeMap.set(authorId, {
-        id: authorId, label: author.uniqueId || author.nickname, type: 'user',
-        verified: author.verified, followers: post.data?.authorStats?.followerCount || 0
-      });
-    }
-    const hashtags = post.data?.challenges || [];
-    hashtags.forEach(tag => {
-      const tagId = `h_${tag.id}`;
-      if (!nodeMap.has(tagId)) nodeMap.set(tagId, { id: tagId, label: tag.title, type: 'hashtag', count: 0 });
-      nodeMap.get(tagId).count++;
-      links.push({ source: authorId, target: tagId, postId: post.item_id });
-    });
-  });
-
-  return { nodes: Array.from(nodeMap.values()), links };
-}
-
-function extractHashtagNetwork(posts) {
-  const nodeMap = new Map();
-  posts.forEach(post => {
-    const hashtags = post.data?.challenges || [];
-    hashtags.forEach(tag => {
-      if (!nodeMap.has(tag.id)) nodeMap.set(tag.id, { id: tag.id, label: tag.title, count: 0, totalEngagement: 0, type: 'hashtag' });
-      const node = nodeMap.get(tag.id);
-      node.count++;
-      node.totalEngagement += (post.data?.stats?.diggCount || 0);
-    });
-  });
-  return { nodes: Array.from(nodeMap.values()), links: [] };
-}
-
-// Instagram-specific: Photo tag network
-function extractPhotoTagNetwork(posts) {
-  const nodeMap = new Map();
-  const links = [];
-  
-  posts.forEach(post => {
-    if (post.platform !== 'instagram') return; // Only Instagram has photo tags
-    
-    const author = post.data?.author;
-    const usertags = post.data?._instagram?.usertags?.in || [];
-    
-    if (!author || usertags.length === 0) return;
-    
-    const authorId = `u_${author.id}`;
-    if (!nodeMap.has(authorId)) {
-      nodeMap.set(authorId, {
-        id: authorId,
-        label: author.uniqueId || author.nickname,
-        type: 'user',
-        verified: author.verified,
-        followers: 0
-      });
-    }
-    
-    // Create connections to tagged users
-    usertags.forEach(tag => {
-      const taggedUser = tag.user;
-      if (!taggedUser) return;
-      
-      const taggedId = `u_${taggedUser.id}`;
-      if (!nodeMap.has(taggedId)) {
-        nodeMap.set(taggedId, {
-          id: taggedId,
-          label: taggedUser.username,
-          type: 'user',
-          verified: taggedUser.is_verified || false,
-          followers: 0
-        });
-      }
-      
-      links.push({ source: authorId, target: taggedId, postId: post.item_id });
-    });
-  });
-  
-  return { nodes: Array.from(nodeMap.values()), links };
-}
-
-// Instagram-specific: Location network
-function extractLocationNetwork(posts) {
-  const nodeMap = new Map();
-  const links = [];
-  
-  posts.forEach(post => {
-    if (post.platform !== 'instagram') return; // Only Instagram has location data
-    
-    const author = post.data?.author;
-    const location = post.data?._instagram?.location;
-    
-    if (!author || !location) return;
-    
-    const authorId = `u_${author.id}`;
-    if (!nodeMap.has(authorId)) {
-      nodeMap.set(authorId, {
-        id: authorId,
-        label: author.uniqueId || author.nickname,
-        type: 'user',
-        verified: author.verified,
-        followers: 0
-      });
-    }
-    
-    const locationId = `loc_${location.pk}`;
-    if (!nodeMap.has(locationId)) {
-      nodeMap.set(locationId, {
-        id: locationId,
-        label: location.name,
-        type: 'location',
-        count: 0,
-        lat: location.lat,
-        lng: location.lng
-      });
-    }
-    
-    nodeMap.get(locationId).count++;
-    links.push({ source: authorId, target: locationId, postId: post.item_id });
-  });
-  
-  return { nodes: Array.from(nodeMap.values()), links };
-}
-
-// =========================
-// Metrics & communities
-// =========================
-function calculateNetworkMetrics(graph) {
-  const n = graph.nodes.length;
-  const m = graph.links.length;
-  if (n === 0) return null;
-
-  const maxEdges = (n * (n - 1)) / 2;
-  const density = maxEdges > 0 ? (m / maxEdges).toFixed(3) : 0;
-
-  const degrees = new Map();
-  graph.nodes.forEach(node => degrees.set(node.id, 0));
-  graph.links.forEach(link => {
-    degrees.set(link.source, (degrees.get(link.source) || 0) + 1);
-    degrees.set(link.target, (degrees.get(link.target) || 0) + 1);
-  });
-
-  const avgDegree = (Array.from(degrees.values()).reduce((a,b)=>a+b,0) / n).toFixed(2);
-  const maxDegree = degrees.size ? Math.max(...Array.from(degrees.values())) : 0;
-
-  graph.nodes.forEach(node => { node.degree = degrees.get(node.id) || 0; });
-
-  let totalClustering = 0, validNodes = 0;
-  graph.nodes.forEach(node => {
-    const neighbors = new Set();
-    graph.links.forEach(link => {
-      if (link.source === node.id) neighbors.add(link.target);
-      if (link.target === node.id) neighbors.add(link.source);
-    });
-    const k = neighbors.size;
-    if (k < 2) return;
-    let triangles = 0;
-    const arr = Array.from(neighbors);
-    for (let i=0;i<arr.length;i++){
-      for (let j=i+1;j<arr.length;j++){
-        if (graph.links.some(l => (l.source===arr[i] && l.target===arr[j]) || (l.target===arr[i] && l.source===arr[j]))) triangles++;
-      }
-    }
-    const possible = (k*(k-1))/2;
-    if (possible > 0) { totalClustering += triangles/possible; validNodes++; }
-  });
-  const avgClustering = validNodes > 0 ? (totalClustering / validNodes).toFixed(3) : 0;
-
-  return { nodes: n, edges: m, density, avgDegree, maxDegree, avgClustering };
-}
-
 function displayMetrics(metrics) {
   if (!metrics) { metricsPanel.style.display = 'none'; return; }
   metricsList.innerHTML = `
@@ -1180,108 +714,41 @@ function displayMetrics(metrics) {
   metricsPanel.style.display = 'block';
 }
 
-function detectCommunities(graph) {
-  if (graph.nodes.length === 0 || graph.links.length === 0) return null;
-
-  const adj = new Map();
-  graph.nodes.forEach(n => adj.set(n.id, new Set()));
-  graph.links.forEach(l => { adj.get(l.source).add(l.target); adj.get(l.target).add(l.source); });
-
-  const labels = new Map();
-  graph.nodes.forEach((n,i)=>labels.set(n.id, i));
-
-  let changed = true, iterations = 0;
-  const maxIterations = 100;
-
-  while (changed && iterations < maxIterations) {
-    changed = false; iterations++;
-    const shuffled = [...graph.nodes].sort(() => Math.random()-0.5);
-    shuffled.forEach(node => {
-      const neighbors = adj.get(node.id); if (neighbors.size===0) return;
-      const counts = new Map();
-      neighbors.forEach(nb => { const lab = labels.get(nb); counts.set(lab, (counts.get(lab)||0)+1); });
-      let best = labels.get(node.id), bestCount = 0;
-      counts.forEach((c,lab)=>{ if (c>bestCount){ bestCount=c; best=lab; } });
-      if (best !== labels.get(node.id)) { labels.set(node.id, best); changed = true; }
-    });
-  }
-  const uniq = [...new Set(labels.values())];
-  const remap = new Map(); uniq.forEach((lab,i)=>remap.set(lab,i));
-  const out = new Map(); labels.forEach((lab,id)=>out.set(id, remap.get(lab)));
-  return { communities: out, count: uniq.length };
-}
-
 // =========================
 // Update network
 // =========================
 function updateNetwork() {
+  if (!rawData.length) {
+    return;
+  }
+
+  ensureWorkers();
+
   loading.classList.add('active');
   loadingText.textContent = 'Building network...';
 
-    setTimeout(() => {
-      const minEngagement = parseInt(engagementFilter.value, 10);
-      const startDateValue = dateStart.value ? new Date(dateStart.value).getTime() / 1000 : undefined;
-      const endDateValue = dateEnd.value ? (new Date(dateEnd.value).getTime() / 1000) + 86399 : undefined;
+  const minEngagement = parseInt(engagementFilter.value, 10) || 0;
+  const startDateValue = dateStart.value ? new Date(dateStart.value).getTime() / 1000 : undefined;
+  const endDateValue = dateEnd.value ? (new Date(dateEnd.value).getTime() / 1000) + 86399 : undefined;
 
-      const filtered = filterData(rawData, {
-        minEngagement,
-        startDate: startDateValue,
-        endDate: endDateValue,
-        onDebug(post, details) {
-          console.log(`Filter Debug - Post ${post.item_id}:`, details);
-        },
-      });
-      filteredData = filtered;
-      console.log(`Filtered: ${filteredData.length} posts out of ${rawData.length} (${rawData.length - filteredData.length} filtered out). MinEngagement: ${minEngagement}, DateRange: ${dateStart.value || 'none'} - ${dateEnd.value || 'none'}`);
-      const networkType = networkTypeSelect.value;
+  currentFilters = {
+    minEngagement,
+    startDate: startDateValue,
+    endDate: endDateValue,
+  };
 
-      let network;
-    switch (networkType) {
-      case 'mention':     network = extractMentionNetwork(filtered);     break;
-      case 'coHashtag':   network = extractCoHashtagNetwork(filtered);   break;
-      case 'userHashtag': network = extractUserHashtagNetwork(filtered); break;
-      case 'hashtag':     network = extractHashtagNetwork(filtered);     break;
-      case 'photoTag':    network = extractPhotoTagNetwork(filtered);    break;
-      case 'location':    network = extractLocationNetwork(filtered);    break;
-      default:            network = { nodes: [], links: [] };
-    }
+  communities = null;
+  cibDetection = null;
 
-      graphData = network;
-      communities = null;
-      cibDetection = null;
-
-      networkMetrics = calculateNetworkMetrics(network);
-      displayMetrics(networkMetrics);
-
-      if (statElements.nodes) statElements.nodes.textContent = network.nodes.length;
-      if (statElements.edges) statElements.edges.textContent = network.links.length;
-      if (statElements.density) statElements.density.textContent = networkMetrics ? networkMetrics.density : '0';
-      if (statElements.communities) statElements.communities.textContent = '0';
-      if (statElements.suspicious) statElements.suspicious.textContent = '0';
-
-    cibPanel.style.display = 'none';
-
-    // Check if network is empty
-    if (network.nodes.length === 0 || network.links.length === 0) {
-      loading.classList.remove('active');
-      loadingText.textContent = `No ${networkType === 'mention' ? 'mentions' : 
-                                  networkType === 'coHashtag' ? 'co-hashtags' : 
-                                  networkType === 'hashtag' ? 'hashtags' : 
-                                  networkType === 'userHashtag' ? 'user-hashtag connections' : 
-                                  networkType === 'photoTag' ? 'photo tags' : 
-                                  'location connections'} found in this dataset. Try a different network type.`;
-      setTimeout(() => { loadingText.textContent = ''; }, 5000);
-      return;
-    }
-
-    // Build adjacency (for degree/hover-neighbor glow) and an id->node map
-    buildAdjacency(graphData);
-    idToNode = new Map(graphData.nodes.map(n => [n.id, n]));
-
-    initializeVisualization();
-    loading.classList.remove('active');
-    updateCoach();
-  }, 100);
+  const requestId = ++latestNetworkRequestId;
+  if (analyticsWorker) {
+    analyticsWorker.postMessage({
+      type: 'filter-and-build',
+      requestId,
+      filters: currentFilters,
+      networkType: networkTypeSelect.value,
+    });
+  }
 }
 
 // =========================
@@ -2837,16 +2304,11 @@ resetCibParamsBtn.addEventListener('click', () => {
 });
 
 detectBtn.addEventListener('click', () => {
-  if (!graphData || graphData.nodes.length === 0) return;
+  if (!analyticsWorker || !graphData || graphData.nodes.length === 0) return;
   loading.classList.add('active');
   loadingText.textContent = 'Detecting communities...';
-  setTimeout(() => {
-    communities = detectCommunities(graphData);
-    if (communities && statElements.communities) statElements.communities.textContent = communities.count;
-    drawNetwork();
-    loading.classList.remove('active');
-    updateCoach();
-  }, 100);
+  const requestId = ++latestCommunityRequestId;
+  analyticsWorker.postMessage({ type: 'detect-communities', requestId, graph: graphData });
 });
 
 // =========================
