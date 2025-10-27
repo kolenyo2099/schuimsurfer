@@ -191,17 +191,26 @@ function detectTemporalBursts(postsByUser, timeWindow, minPosts = 5) {
 // =========================
 async function detectCIB(filteredData, params, timeWindow) {
     console.log("CIB detection started with params:", params);
-    const results = { suspiciousUsers: new Set(), indicators: {}, userScores: new Map(), userReasons: new Map() };
+    const userReasons = new Map();
+    const userScores = new Map();
+    const indicators = {};
+
+    function addReason(userId, reason, score) {
+        if (!userReasons.has(userId)) {
+            userReasons.set(userId, []);
+            userScores.set(userId, 0);
+        }
+        userReasons.get(userId).push(reason);
+        userScores.set(userId, userScores.get(userId) + score);
+    }
+
     self.postMessage({ status: 'progress', text: 'Calculating statistics...' });
 
     if (params.semanticEnabled) {
-        console.log("Initializing embedding model...");
         await initEmbeddingModel();
-        console.log("Embedding model initialized.");
     }
 
     const stats = calculateDatasetStatistics(filteredData);
-    console.log("Dataset stats:", stats);
     const postsByUser = new Map();
     filteredData.forEach(post => {
         const userId = post.data?.author?.id;
@@ -209,6 +218,13 @@ async function detectCIB(filteredData, params, timeWindow) {
         if (userId && timestamp) {
             if (!postsByUser.has(userId)) postsByUser.set(userId, []);
             postsByUser.get(userId).push({ timestamp, post });
+        }
+    });
+
+    const userIdToName = new Map();
+    filteredData.forEach(p => {
+        if (p.data?.author?.id) {
+            userIdToName.set(p.data.author.id, p.data.author.uniqueId || p.data.author.nickname || `user_${p.data.author.id}`);
         }
     });
 
@@ -220,16 +236,21 @@ async function detectCIB(filteredData, params, timeWindow) {
             const [u1, p1] = userTs[i];
             const [u2, p2] = userTs[j];
             let syncCount = 0;
-            p1.forEach(a => p2.forEach(b => { if (Math.abs(a.timestamp - b.timestamp) < timeWindow) syncCount++; }));
+            p1.forEach(a => p2.forEach(b => {
+                if (Math.abs(a.timestamp - b.timestamp) < timeWindow) syncCount++;
+            }));
             if (syncCount >= params.minSyncPosts) {
-                results.suspiciousUsers.add(u1);
-                results.suspiciousUsers.add(u2);
                 synchGroups.push({ u1, u2, syncCount });
             }
         }
     }
-    results.indicators.synchronized = synchGroups.length;
-    console.log(`Found ${synchGroups.length} synchronized groups.`);
+    indicators.synchronized = synchGroups.length;
+    synchGroups.forEach(g => {
+        const name1 = userIdToName.get(g.u2) || 'unknown';
+        const name2 = userIdToName.get(g.u1) || 'unknown';
+        addReason(g.u1, `Synchronized posting with: ${name1}`, 25);
+        addReason(g.u2, `Synchronized posting with: ${name2}`, 25);
+    });
 
     self.postMessage({ status: 'progress', text: 'Analyzing hashtag usage...' });
     const userHashtagSets = new Map();
@@ -241,7 +262,6 @@ async function detectCIB(filteredData, params, timeWindow) {
             userHashtagSets.get(userId).push(...hashtags);
         }
     });
-
     const hashtagSequences = new Map();
     const allSetsForTfidf = Array.from(userHashtagSets.values()).map(arr => new Set(arr));
     userHashtagSets.forEach((hashtags, userId) => {
@@ -252,16 +272,18 @@ async function detectCIB(filteredData, params, timeWindow) {
             hashtagSequences.get(key).users.add(userId);
         }
     });
-
     let identicalHashtagUsers = 0;
     hashtagSequences.forEach(data => {
         if (data.users.size >= params.minHashtagGroupSize) {
-            data.users.forEach(u => results.suspiciousUsers.add(u));
             identicalHashtagUsers += data.users.size;
+            const userNames = [...data.users].map(id => userIdToName.get(id) || 'unknown');
+            data.users.forEach(userId => {
+                const partners = userNames.filter(name => name !== (userIdToName.get(userId) || 'unknown')).slice(0, 5).join(', ');
+                addReason(userId, `Rare hashtag combinations with: ${partners}`, 20);
+            });
         }
     });
-    results.indicators.identicalHashtags = identicalHashtagUsers;
-    console.log(`Found ${identicalHashtagUsers} users with identical rare hashtags.`);
+    indicators.identicalHashtags = identicalHashtagUsers;
 
     self.postMessage({ status: 'progress', text: 'Analyzing usernames...' });
     const usernames = new Map();
@@ -277,7 +299,7 @@ async function detectCIB(filteredData, params, timeWindow) {
         for (let j = i + 1; j < usernameArray.length; j++) {
             const [id1, name1] = usernameArray[i];
             const [id2, name2] = usernameArray[j];
-            const similarity = 1 - (levenshteinDistance(name1, name2) / Math.max(name1.length, name2.length));
+            const similarity = 1 - (levenshteinDistance(name1, name2) / Math.max(name1.length, name2.length || 1));
             if (similarity >= params.usernameThreshold) {
                 const key = [name1, name2].sort().join('|');
                 if (!usernameGroups.has(key)) usernameGroups.set(key, new Set());
@@ -288,34 +310,42 @@ async function detectCIB(filteredData, params, timeWindow) {
     let similarUsernameCount = 0;
     usernameGroups.forEach(users => {
         if (users.size >= params.minUsernameGroupSize) {
-            users.forEach(u => results.suspiciousUsers.add(u));
             similarUsernameCount += users.size;
+            const userNames = [...users].map(id => userIdToName.get(id) || 'unknown');
+            users.forEach(userId => {
+                const partners = userNames.filter(name => name !== (userIdToName.get(userId) || 'unknown')).slice(0, 5).join(', ');
+                addReason(userId, `Similar username pattern with: ${partners}`, 10);
+            });
         }
     });
-    results.indicators.similarUsernames = similarUsernameCount;
-    console.log(`Found ${similarUsernameCount} users with similar usernames.`);
+    indicators.similarUsernames = similarUsernameCount;
 
     self.postMessage({ status: 'progress', text: 'Analyzing posting volume...' });
-    results.indicators.highVolume = 0;
+    indicators.highVolume = 0;
     postsByUser.forEach((posts, userId) => {
         if (posts.length >= params.minHighVolumePosts) {
             const zScore = (posts.length - stats.posts.mean) / (stats.posts.stdDev || 1);
             if (zScore > params.zscoreThreshold) {
-                results.suspiciousUsers.add(userId);
-                results.indicators.highVolume++;
+                addReason(userId, `High-volume posting (z-score: ${zScore.toFixed(1)})`, 15);
+                indicators.highVolume++;
             }
         }
     });
 
     self.postMessage({ status: 'progress', text: 'Detecting temporal bursts...' });
     const bursts = detectTemporalBursts(postsByUser, timeWindow, params.burstPosts);
-    results.indicators.temporalBursts = bursts.length;
-    console.log(`Found ${bursts.length} temporal bursts.`);
+    indicators.temporalBursts = bursts.length;
+    bursts.forEach(burst => addReason(burst.userId, 'Posting burst', 15));
 
     postsByUser.forEach((posts, userId) => {
-        if (analyzePostingRhythm(posts, params.rhythmCV).regular) results.suspiciousUsers.add(userId);
+        const rhythm = analyzePostingRhythm(posts, params.rhythmCV);
+        if (rhythm.regular) {
+            addReason(userId, `Highly regular posting rhythm (CV: ${(rhythm.cv * 100).toFixed(1)}%)`, 20);
+        }
         const nightPosting = analyzeNightPosting(posts, params.nightGap);
-        if (nightPosting.suspicious) results.suspiciousUsers.add(userId);
+        if (nightPosting.suspicious) {
+            addReason(userId, `24/7 posting pattern (max gap: ${Math.floor((nightPosting.avgMaxGap || 0) / 3600)}h)`, 25);
+        }
     });
 
     let semanticGroups = [];
@@ -335,146 +365,69 @@ async function detectCIB(filteredData, params, timeWindow) {
             for (let j = i + 1; j < embedArray.length; j++) {
                 const similarity = cosineSimilarity(embedArray[i].embedding, embedArray[j].embedding);
                 if (similarity >= params.semanticThreshold) {
-                    results.suspiciousUsers.add(embedArray[i].userId).add(embedArray[j].userId);
                     semanticGroups.push({ users: [embedArray[i].userId, embedArray[j].userId], similarity: similarity.toFixed(3) });
+                    const name1 = userIdToName.get(embedArray[j].userId) || 'unknown';
+                    const name2 = userIdToName.get(embedArray[i].userId) || 'unknown';
+                    addReason(embedArray[i].userId, `Semantically similar captions with: ${name1}`, 25);
+                    addReason(embedArray[j].userId, `Semantically similar captions with: ${name2}`, 25);
                 }
             }
         }
     }
-    results.indicators.semanticDuplicates = semanticGroups.length;
-    console.log(`Found ${semanticGroups.length} semantic groups.`);
+    indicators.semanticDuplicates = semanticGroups.length;
 
     self.postMessage({ status: 'progress', text: 'Analyzing caption templates...' });
     const captions = new Map();
-    filteredData.forEach(p => { if (p.data?.author?.id && p.data.desc) captions.set(p.item_id, { userId: p.data.author.id, desc: p.data.desc }); });
+    filteredData.forEach(p => {
+        if (p.data?.author?.id && p.data.desc) {
+            captions.set(p.item_id, { userId: p.data.author.id, desc: p.data.desc });
+        }
+    });
     const captionArray = Array.from(captions.values());
     const captionPairs = [];
     for (let i = 0; i < captionArray.length; i++) {
         for (let j = i + 1; j < captionArray.length; j++) {
             const overlap = ngramOverlap(captionArray[i].desc, captionArray[j].desc);
             if (overlap >= params.ngramThreshold) {
-                results.suspiciousUsers.add(captionArray[i].userId).add(captionArray[j].userId);
-                captionPairs.push({users: [captionArray[i].userId, captionArray[j].userId], overlap});
+                captionPairs.push({ users: [captionArray[i].userId, captionArray[j].userId], overlap });
+                const name1 = userIdToName.get(captionArray[j].userId) || 'unknown';
+                const name2 = userIdToName.get(captionArray[i].userId) || 'unknown';
+                addReason(captionArray[i].userId, `Template caption with: ${name1}`, 20);
+                addReason(captionArray[j].userId, `Template caption with: ${name2}`, 20);
             }
         }
     }
-    results.indicators.templateCaptions = captionPairs.length;
-    console.log(`Found ${captionPairs.length} template caption pairs.`);
+    indicators.templateCaptions = captionPairs.length;
 
     self.postMessage({ status: 'progress', text: 'Analyzing account creation...' });
     const creationClusters = detectAccountCreationClusters(filteredData, 86400, params.clusterSize);
-    results.indicators.accountCreationClusters = creationClusters.length;
-    creationClusters.forEach(cluster => cluster.forEach(userId => results.suspiciousUsers.add(userId)));
-    console.log(`Found ${creationClusters.length} account creation clusters.`);
-
-    const userIdToName = new Map();
-    filteredData.forEach(p => { if(p.data?.author?.id) userIdToName.set(p.data.author.id, p.data.author.uniqueId || p.data.author.nickname || `user_${p.data.author.id}`)});
-
-    results.suspiciousUsers.forEach(userId => {
-        let score = 0;
-        const reasons = [];
-
-        const userSyncGroups = synchGroups.filter(g => g.u1 === userId || g.u2 === userId);
-        if (userSyncGroups.length > 0) {
-            score += 25;
-            const partners = userSyncGroups.map(g => userIdToName.get(g.u1 === userId ? g.u2 : g.u1) || 'unknown').slice(0, 5);
-            reasons.push(`Synchronized posting with: ${partners.join(', ')}`);
-        }
-
-        const userHashtagPartners = new Set();
-        hashtagSequences.forEach(data => {
-            if (data.users.has(userId) && data.users.size >= params.minHashtagGroupSize) {
-                data.users.forEach(partnerId => {
-                    if (partnerId !== userId) userHashtagPartners.add(userIdToName.get(partnerId) || 'unknown');
-                });
-            }
+    indicators.accountCreationClusters = creationClusters.length;
+    creationClusters.forEach(cluster => {
+        cluster.forEach(userId => {
+            addReason(userId, `Account created with ${cluster.size - 1} others within 24 hours`, 30);
         });
-        if (userHashtagPartners.size > 0) {
-            score += 20;
-            reasons.push(`Rare hashtag combinations with: ${[...userHashtagPartners].slice(0, 5).join(', ')}`);
-        }
-
-        const userUsernamePartners = new Set();
-        usernameGroups.forEach(users => {
-            if (users.has(userId) && users.size >= params.minUsernameGroupSize) {
-                users.forEach(partnerId => {
-                    if (partnerId !== userId) userUsernamePartners.add(userIdToName.get(partnerId) || 'unknown');
-                });
-            }
-        });
-        if (userUsernamePartners.size > 0) {
-            score += 10;
-            reasons.push(`Similar username pattern with: ${[...userUsernamePartners].slice(0, 5).join(', ')}`);
-        }
-
-        const userPosts = postsByUser.get(userId) || [];
-        if (userPosts.length >= params.minHighVolumePosts) {
-            const zScore = (userPosts.length - stats.posts.mean) / (stats.posts.stdDev || 1);
-            if (zScore > params.zscoreThreshold) {
-                score += 15;
-                reasons.push(`High-volume posting (z-score: ${zScore.toFixed(1)})`);
-            }
-        }
-
-        if (bursts.some(b => b.userId === userId)) { score += 15; reasons.push('Posting burst'); }
-
-        const rhythm = analyzePostingRhythm(userPosts, params.rhythmCV);
-        if (rhythm.regular) { score += 20; reasons.push(`Highly regular posting rhythm (CV: ${(rhythm.cv * 100).toFixed(1)}%)`); }
-
-        const nightPosting = analyzeNightPosting(userPosts, params.nightGap);
-        if (nightPosting.suspicious) { score += 25; reasons.push(`24/7 posting pattern (max gap: ${Math.floor(nightPosting.avgMaxGap / 3600)}h)`);}
-
-        const semanticPartners = new Set();
-        semanticGroups.forEach(g => {
-            if (g.users.includes(userId)) {
-                g.users.forEach(p => {
-                    if (p !== userId) semanticPartners.add(userIdToName.get(p) || 'unknown');
-                });
-            }
-        });
-        if (semanticPartners.size > 0) {
-            score += 25;
-            reasons.push(`Semantically similar captions with: ${[...semanticPartners].slice(0, 5).join(', ')}`);
-        }
-
-        const templatePartners = new Set();
-        captionPairs.forEach(p => {
-            if (p.users.includes(userId)) {
-                p.users.forEach(u => {
-                    if (u !== userId) templatePartners.add(userIdToName.get(u) || 'unknown');
-                });
-            }
-        });
-        if (templatePartners.size > 0) {
-            score += 20;
-            reasons.push(`Template caption with: ${[...templatePartners].slice(0, 5).join(', ')}`);
-        }
-
-        creationClusters.forEach(cluster => {
-            if (cluster.has(userId)) {
-                score += 30;
-                reasons.push(`Account created with ${cluster.size - 1} others within 24 hours`);
-            }
-        });
-
-        if (reasons.length >= 2) {
-          const multiplier = 1 + (params.crossMultiplier * reasons.length);
-          score = Math.min(100, score * multiplier);
-        }
-
-        const reasonText = reasons.join(' ').toLowerCase();
-        if (reasonText.includes('similar username') && reasonText.includes('created with')) {
-            score = Math.min(100, score + 20);
-        }
-        if (reasonText.includes('synchronized') && reasonText.includes('regular posting')) {
-            score = Math.min(100, score + 15);
-        }
-
-        results.userScores.set(userId, Math.round(score));
-        results.userReasons.set(userId, reasons);
     });
 
-    return results;
+    userScores.forEach((score, userId) => {
+        const reasons = userReasons.get(userId) || [];
+        let finalScore = score;
+        if (reasons.length >= 2) {
+            const multiplier = 1 + (params.crossMultiplier * reasons.length);
+            finalScore = Math.min(100, score * multiplier);
+        }
+        const reasonText = reasons.join(' ').toLowerCase();
+        if (reasonText.includes('similar username') && reasonText.includes('created with')) {
+            finalScore = Math.min(100, finalScore + 20);
+        }
+        if (reasonText.includes('synchronized') && reasonText.includes('regular posting')) {
+            finalScore = Math.min(100, finalScore + 15);
+        }
+        userScores.set(userId, Math.round(finalScore));
+    });
+
+    const suspiciousUsers = new Set(userReasons.keys());
+
+    return { suspiciousUsers, indicators, userScores, userReasons };
 }
 
 
