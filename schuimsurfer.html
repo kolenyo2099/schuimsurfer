@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>SchuimSurfer</title>
+  <link rel="stylesheet" href="assets/css/styles.css">
+
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <div class="header-top">
+        <div style="display: flex; align-items: center; gap: 1rem;">
+          <div>
+            <h1>Zeeschuim Surfer</h1>
+            <div class="subtitle">
+              Basic network analysis and CIB detection
+              <span id="platform-indicator" style="margin-left:0.5rem; opacity:0.7;"></span>
+              <span id="rendering-indicator" style="margin-left:0.5rem; opacity:0.7; font-size:0.75rem;"></span>
+            </div>
+          </div>
+          <button id="help-btn" class="help-btn" title="View complete user guide">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+              <line x1="12" y1="17" x2="12.01" y2="17"></line>
+            </svg>
+            How to?
+          </button>
+        </div>
+        <label class="upload-btn">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="17 8 12 3 7 8"></polyline>
+            <line x1="12" y1="3" x2="12" y2="15"></line>
+          </svg>
+          <span>Upload Zeeschuimer data (ndjson)</span>
+          <input type="file" accept=".ndjson,.json" id="file-input">
+        </label>
+      </div>
+
+      <div class="stats-grid" id="stats" style="display: none;">
+        <div class="stat-card blue"><div class="stat-label">Posts</div><div class="stat-value" id="stat-posts">0</div></div>
+        <div class="stat-card purple"><div class="stat-label">Users</div><div class="stat-value" id="stat-users">0</div></div>
+        <div class="stat-card green"><div class="stat-label">Hashtags</div><div class="stat-value" id="stat-hashtags">0</div></div>
+        <div class="stat-card orange"><div class="stat-label">Avg Engagement</div><div class="stat-value" id="stat-engagement">0</div></div>
+        <div class="stat-card gray"><div class="stat-label">Network Nodes</div><div class="stat-value" id="stat-nodes">0</div></div>
+        <div class="stat-card pink"><div class="stat-label">Network Edges</div><div class="stat-value" id="stat-edges">0</div></div>
+        <div class="stat-card yellow"><div class="stat-label">Density</div><div class="stat-value" id="stat-density">0</div></div>
+        <div class="stat-card cyan"><div class="stat-label">Communities</div><div class="stat-value" id="stat-communities">0</div></div>
+        <div class="stat-card red"><div class="stat-label">Suspicious Accounts</div><div class="stat-value" id="stat-suspicious">0</div></div>
+      </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="main-content">
+      <!-- Sidebar -->
+      <div class="sidebar">
+        <!-- Education panel -->
+        <div class="info-panel" id="edu-panel" style="margin-bottom:1.5rem;">
+          <div class="info-title" style="margin-bottom:.5rem;">Some useful info:</div>
+          <div id="edu-basics" class="small">
+            <p><b>Nodes</b> are users or hashtags; <b>edges</b> connect them (mentions, co-hashtags, etc.).</p>
+            <p><b>Degree</b> = how many neighbors a node has. Hubs can shape attention; high-degree hashtags often mark narratives.</p>
+            <p><b>Clustering</b> ≈ how connected a node's neighbors are. High clustering hints at tight echo chambers.</p>
+            <p><b>Communities</b> are groups more connected inside than outside — useful to find sub-audiences or coordinated clusters.</p>
+          </div>
+          <div class="section-divider" style="margin:.75rem 0;"></div>
+          <div id="edu-coach" class="small">
+            <p><b>How to:</b> load data, pick a network type, then <i>hover</i> nodes for quick stats or <i>click</i> for deep-dive & example posts.</p>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <label class="control-label">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M12 1v6m0 6v6"></path>
+              <path d="M17 12h6M1 12h6"></path>
+            </svg>
+            Network Type
+          </label>
+          <select id="network-type">
+            <option value="mention">User Mentions Network</option>
+            <option value="coHashtag">Hashtag Co-occurrence</option>
+            <option value="userHashtag">User-Hashtag Network</option>
+            <option value="hashtag">Hashtag Usage</option>
+            <option value="photoTag" title="Instagram only: users tagged in photos">📷 Photo Tag Network (Instagram)</option>
+            <option value="location" title="Instagram only: posts by location">📍 Location Network (Instagram)</option>
+          </select>
+        </div>
+
+        <div class="control-group">
+          <label class="control-label">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <circle cx="12" cy="12" r="6"></circle>
+              <circle cx="12" cy="12" r="2"></circle>
+            </svg>
+            Node Size By
+          </label>
+          <select id="node-size-by">
+            <option value="degree">Degree (connections)</option>
+            <option value="followers">Followers/Usage Count</option>
+            <option value="uniform">Uniform Size</option>
+          </select>
+        </div>
+
+        <div class="control-group">
+          <label class="control-label">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+              <line x1="16" y1="2" x2="16" y2="6"></line>
+              <line x1="8" y1="2" x2="8" y2="6"></line>
+              <line x1="3" y1="10" x2="21" y2="10"></line>
+            </svg>
+            Time Range Filter
+          </label>
+          <div class="date-range">
+            <div class="date-input-wrapper">
+              <label class="date-label">From</label>
+              <input type="date" id="date-start">
+            </div>
+            <div class="date-input-wrapper">
+              <label class="date-label">To</label>
+              <input type="date" id="date-end">
+            </div>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <label class="control-label">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
+            </svg>
+            Minimum Engagement
+          </label>
+          <input type="range" id="engagement-filter" min="0" max="10000" step="100" value="0">
+          <div class="range-value" id="engagement-value">0+ interactions</div>
+        </div>
+
+        <div class="control-group">
+          <label class="control-label" title="Controls all CIB detection thresholds. Lower = more sensitive (more detections), Higher = stricter (higher confidence). See Advanced Settings to view/override specific parameters.">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            </svg>
+            CIB Detection Sensitivity
+          </label>
+          <input type="range" id="cib-threshold" min="1" max="10" step="1" value="5">
+          <div class="range-value" id="threshold-value">Medium (5)</div>
+          <div style="font-size: 0.65rem; color: #9ca3af; margin-top: 0.25rem; font-style: italic;">
+            ← More detections | Fewer, higher-confidence →
+          </div>
+        </div>
+
+        <div class="control-group">
+          <label class="control-label">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <polyline points="12 6 12 12 16 14"></polyline>
+            </svg>
+            Synchronized Posting Time Window
+          </label>
+          <input type="range" id="time-window" min="1" max="1800" step="1" value="300">
+          <div class="range-value" id="time-window-value">5 minutes</div>
+        </div>
+
+        <div class="control-group">
+          <label class="control-label">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"></circle>
+              <path d="m21 21-4.35-4.35"></path>
+            </svg>
+            Search
+          </label>
+          <input type="text" id="search-input" placeholder="Search nodes...">
+        </div>
+
+        <div class="control-group">
+          <button class="btn btn-cib" id="cib-btn" disabled>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+            </svg>
+            Detect Coordinated Behavior
+          </button>
+          <button class="btn btn-settings" id="cib-settings-btn" disabled style="background: #6b7280; margin-bottom: 0.5rem;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M12 1v6m0 6v6M17 12h6M1 12h6"></path>
+            </svg>
+            Advanced CIB Settings
+          </button>
+          <button class="btn btn-detect" id="detect-btn" disabled>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M12 1v6m0 6v6"></path>
+              <path d="M17 12h6M1 12h6"></path>
+            </svg>
+            Detect Communities
+          </button>
+          <button class="btn btn-export" id="export-btn" disabled>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            Export Network Data
+          </button>
+          <button class="btn" id="export-csv-btn" disabled style="background: #059669; color: white; margin-top: 0.5rem;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+              <polyline points="14 2 14 8 20 8"></polyline>
+              <line x1="16" y1="13" x2="8" y2="13"></line>
+              <line x1="16" y1="17" x2="8" y2="17"></line>
+              <polyline points="10 9 9 9 8 9"></polyline>
+            </svg>
+            Export CIB as CSV
+          </button>
+          <button class="btn" id="export-report-btn" disabled style="background: #dc2626; color: white; margin-top: 0.5rem;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+              <polyline points="14 2 14 8 20 8"></polyline>
+              <line x1="16" y1="13" x2="8" y2="13"></line>
+              <line x1="16" y1="17" x2="8" y2="17"></line>
+            </svg>
+            Export Investigation Report
+          </button>
+        </div>
+
+        <div class="section-divider"></div>
+
+        <!-- Advanced CIB Settings Panel -->
+        <div class="info-panel" id="cib-settings-panel" style="display: none;">
+          <div class="info-header">
+            <div class="info-title">Advanced CIB Parameters</div>
+            <button class="close-btn" id="close-cib-settings">✕</button>
+          </div>
+          
+          <div style="font-size: 0.75rem; color: #6b7280; margin-bottom: 0.5rem;">
+            Fine-tune detection thresholds. Hover over labels for explanations.
+          </div>
+          
+          <div id="sensitivity-preset-indicator" style="font-size: 0.85rem; color: #059669; font-weight: 600; margin-bottom: 1rem; padding: 0.5rem; background: #d1fae5; border-radius: 0.375rem; text-align: center;">
+            Current preset: Medium (5)
+          </div>
+          
+          <div style="font-size: 0.7rem; color: #9ca3af; margin-bottom: 1rem; font-style: italic;">
+            💡 These values are automatically set by the "CIB Detection Sensitivity" slider above. You can manually override any parameter for full control.
+          </div>
+          
+          <div class="settings-grid">
+            <div class="setting-item">
+              <label title="Enable/disable AI-powered semantic similarity detection. Disable for faster processing on large datasets.">
+                <span class="setting-label">🤖 Use Semantic Similarity</span>
+                <select id="param-semantic-enabled">
+                  <option value="true">Enabled (slower, more accurate)</option>
+                  <option value="false">Disabled (faster)</option>
+                </select>
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="Cosine similarity threshold for AI-powered caption matching (0-1). Higher = stricter">
+                <span class="setting-label">Semantic Threshold</span>
+                <input type="number" id="param-semantic-threshold" min="0" max="1" step="0.05" value="0.85">
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="Jaccard similarity for 5-gram template matching (0-1). Higher = stricter">
+                <span class="setting-label">N-gram Overlap</span>
+                <input type="number" id="param-ngram-threshold" min="0" max="1" step="0.05" value="0.3">
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="Levenshtein similarity for username matching (0-1). Higher = stricter">
+                <span class="setting-label">Username Similarity</span>
+                <input type="number" id="param-username-threshold" min="0" max="1" step="0.05" value="0.8">
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="TF-IDF score threshold for rare hashtag detection (0-2). Higher = rarer hashtags only">
+                <span class="setting-label">TF-IDF Threshold</span>
+                <input type="number" id="param-tfidf-threshold" min="0" max="2" step="0.1" value="0.5">
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="Z-score threshold for high-volume detection (1-4). Higher = stricter">
+                <span class="setting-label">Z-Score Threshold</span>
+                <input type="number" id="param-zscore-threshold" min="1" max="4" step="0.5" value="2">
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="Minimum posts in time window to trigger burst detection (3-10)">
+                <span class="setting-label">Burst Min Posts</span>
+                <input type="number" id="param-burst-posts" min="3" max="10" step="1" value="5">
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="Coefficient of variation threshold for rhythm detection (0-0.5). Lower = more regular">
+                <span class="setting-label">Rhythm CV Threshold</span>
+                <input type="number" id="param-rhythm-cv" min="0" max="0.5" step="0.05" value="0.1">
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="Max posting gap in seconds for 24/7 detection (3600-14400). Lower = stricter">
+                <span class="setting-label">Night Gap (seconds)</span>
+                <input type="number" id="param-night-gap" min="3600" max="14400" step="1800" value="7200">
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="Min accounts in cluster for account creation detection (3-10)">
+                <span class="setting-label">Cluster Min Size</span>
+                <input type="number" id="param-cluster-size" min="3" max="10" step="1" value="5">
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="Score multiplier per indicator (0.1-0.5). Higher = more penalty for multiple indicators">
+                <span class="setting-label">Cross-Indicator Bonus</span>
+                <input type="number" id="param-cross-multiplier" min="0.1" max="0.5" step="0.05" value="0.3">
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="Minimum synchronized posts between users to flag as coordinated (2-10)">
+                <span class="setting-label">Min Sync Posts</span>
+                <input type="number" id="param-min-sync-posts" min="2" max="10" step="1" value="2">
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="Minimum users in a rare hashtag group to flag (3-15)">
+                <span class="setting-label">Min Hashtag Group Size</span>
+                <input type="number" id="param-min-hashtag-group" min="3" max="15" step="1" value="3">
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="Minimum users in a similar username group to flag (3-12)">
+                <span class="setting-label">Min Username Group Size</span>
+                <input type="number" id="param-min-username-group" min="3" max="12" step="1" value="3">
+              </label>
+            </div>
+            
+            <div class="setting-item">
+              <label title="Minimum posts before considering high-volume detection (5-25)">
+                <span class="setting-label">Min High-Volume Posts</span>
+                <input type="number" id="param-min-highvolume-posts" min="5" max="25" step="1" value="5">
+              </label>
+            </div>
+          </div>
+          
+          <button class="btn" id="reset-cib-params" style="background: #6b7280; color: white; margin-top: 1rem;">
+            Reset to Defaults
+          </button>
+        </div>
+
+        <!-- CIB Detection Results -->
+        <div class="info-panel" id="cib-panel" style="display: none;">
+          <div class="info-title" style="margin-bottom: 0.75rem;">CIB Detection Results</div>
+          <div id="cib-results"></div>
+          <div class="warning-box">
+            <p><strong>Note:</strong> These are indicators, not proof. Legitimate activism and organic coordination may trigger signals. Always verify with manual inspection.</p>
+          </div>
+        </div>
+
+        <!-- Network Metrics -->
+        <div class="info-panel" id="metrics-panel" style="display: none;">
+          <div class="info-title" style="margin-bottom: 0.75rem;">Network Metrics</div>
+          <ul class="metrics-list" id="metrics-list"></ul>
+        </div>
+
+        <!-- Selected Node Info (sidebar) -->
+        <div class="info-panel" id="node-info" style="display: none; margin-top: 1rem;">
+          <div class="info-header">
+            <div class="info-title">Node Details</div>
+            <button class="close-btn" id="close-info">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"></line>
+                <line x1="6" y1="6" x2="18" y2="18"></line>
+              </svg>
+            </button>
+          </div>
+          <div id="node-details"></div>
+        </div>
+
+        <!-- Legend -->
+        <div class="legend" style="margin-top: 1rem;">
+          <div class="legend-title">Legend</div>
+          <div class="legend-item"><div class="legend-dot" style="background:#dc2626;"></div><span>Suspicious/CIB Account</span></div>
+          <div class="legend-item"><div class="legend-dot blue" style="background:#3b82f6;"></div><span>Verified User</span></div>
+          <div class="legend-item"><div class="legend-dot purple" style="background:#8b5cf6;"></div><span>Regular User</span></div>
+          <div class="legend-item"><div class="legend-dot green" style="background:#10b981;"></div><span>Hashtag</span></div>
+          <div class="legend-item"><div class="legend-dot" style="background:#f59e0b;"></div><span>Location (Instagram)</span></div>
+          <div class="legend-note">Red nodes indicate accounts flagged as potentially coordinated based on behavioral indicators. Supports 🎵 TikTok, 📷 Instagram, and 🐦 Twitter/X data.</div>
+        </div>
+
+      </div>
+
+      <!-- Canvas area -->
+      <div class="canvas-container">
+        <canvas id="network-canvas"></canvas>
+
+        <!-- Hover tooltip (simple) -->
+        <div id="node-tooltip" style="
+          position:absolute; pointer-events:none; display:none;
+          background:#111827; color:#fff; padding:.4rem .6rem; border-radius:.375rem;
+          font-size:12px; box-shadow:0 6px 20px rgba(0,0,0,.2); z-index:2;">
+        </div>
+
+        <!-- Click modal (rich) -->
+        <div id="node-modal" style="
+          position:fixed; inset:0; background:rgba(0,0,0,.5); display:none;
+          align-items:center; justify-content:center; z-index:2000;">
+          <div id="modal-content-wrapper" style="width:min(780px,92vw); max-height:80vh; overflow:auto; background:#fff; border-radius:12px;
+                      box-shadow:0 20px 60px rgba(0,0,0,.35); transition: width 0.3s ease;">
+            <div style="padding:16px 18px; border-bottom:1px solid #eee; display:flex; align-items:center; justify-content:space-between;">
+              <div id="modal-title" style="font-weight:700; font-size:16px;">Node</div>
+              <button id="modal-close" style="border:none; background:#f3f4f6; padding:.4rem .6rem; border-radius:8px; cursor:pointer;">Close</button>
+            </div>
+            <div id="modal-body" style="padding:16px 18px; font-size:14px;"></div>
+          </div>
+        </div>
+
+        <div class="empty-state" id="empty-state">
+          <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="17 8 12 3 7 8"></polyline>
+            <line x1="12" y1="3" x2="12" y2="15"></line>
+          </svg>
+          <div class="empty-title">No Data Loaded</div>
+          <div class="empty-text">Upload a Zeeschuimer NDJSON file to get started</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Loading Overlay -->
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    <div class="loading-text" id="loading-text">Processing...</div>
+  </div>
+
+  <script type="module" src="assets/js/app.js"></script>
+
+  <!-- Help Modal -->
+  <div id="help-modal" class="help-modal">
+    <div class="help-content" onclick="event.stopPropagation()">
+      <div class="help-header">
+        <div class="help-title">📚 SchuimSurfer User Guide</div>
+        <button class="help-close" id="help-close">✕</button>
+      </div>
+      <div class="help-body" id="help-body">
+        <!-- README content will be loaded here -->
+        <p style="text-align: center; color: #6b7280;">Loading guide...</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Help Modal functionality
+    const helpBtn = document.getElementById('help-btn');
+    const helpModal = document.getElementById('help-modal');
+    const helpClose = document.getElementById('help-close');
+    const helpBody = document.getElementById('help-body');
+
+    // Simple markdown to HTML converter (basic features)
+    function markdownToHtml(md) {
+      let html = md;
+      
+      // Headers
+      html = html.replace(/^### (.*$)/gim, '<h3>$1</h3>');
+      html = html.replace(/^## (.*$)/gim, '<h2>$1</h2>');
+      html = html.replace(/^# (.*$)/gim, '<h1>$1</h1>');
+      html = html.replace(/^#### (.*$)/gim, '<h4>$1</h4>');
+      
+      // Bold
+      html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+      
+      // Italic  
+      html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+      
+      // Code inline
+      html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+      
+      // Links
+      html = html.replace(/\[([^\]]+)\]\(([^\)]+)\)/g, '<a href="$2">$1</a>');
+      
+      // Horizontal rules
+      html = html.replace(/^---$/gim, '<hr>');
+      
+      // Lists (basic)
+      html = html.replace(/^\- (.*$)/gim, '<li>$1</li>');
+      html = html.replace(/^(\d+)\. (.*$)/gim, '<li>$2</li>');
+      
+      // Wrap consecutive <li> in <ul>
+      html = html.replace(/(<li>.*<\/li>\n?)+/g, function(match) {
+        return '<ul>' + match + '</ul>';
+      });
+      
+      // Paragraphs
+      html = html.split('\n\n').map(para => {
+        para = para.trim();
+        if (!para) return '';
+        if (para.startsWith('<h') || para.startsWith('<ul') || para.startsWith('<hr') || para.startsWith('<pre')) {
+          return para;
+        }
+        return '<p>' + para + '</p>';
+      }).join('\n');
+      
+      // Code blocks
+      html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+      
+      return html;
+    }
+
+    // Load README content
+    async function loadReadme() {
+      try {
+        const response = await fetch('README.md');
+        const markdown = await response.text();
+        const html = markdownToHtml(markdown);
+        helpBody.innerHTML = html;
+      } catch (error) {
+        console.error('Failed to load README:', error);
+        helpBody.innerHTML = `
+          <h1>SchuimSurfer User Guide</h1>
+          <p><strong>Unable to load README.md file.</strong> Please ensure README.md is in the same directory as this HTML file.</p>
+          <h2>Quick Start</h2>
+          <p>1. Upload your social media data (JSON format)<br>
+          2. Select network type from dropdown<br>
+          3. Click "Detect Communities" to identify clusters<br>
+          4. Click "Detect Coordinated Behavior" to run CIB analysis<br>
+          5. Click nodes to see details</p>
+          <h2>CIB Detection Methods</h2>
+          <ul>
+            <li>🤖 <strong>Semantic Similarity</strong> - AI-powered caption matching</li>
+            <li>⏱️ <strong>Synchronized Posting</strong> - Coordinated timing detection</li>
+            <li>🏷️ <strong>TF-IDF Hashtags</strong> - Rare hashtag combinations</li>
+            <li>👤 <strong>Username Patterns</strong> - Similar account names</li>
+            <li>📈 <strong>Z-Score Analysis</strong> - Statistical outlier detection</li>
+            <li>💥 <strong>Temporal Bursts</strong> - Activity spikes</li>
+            <li>🎵 <strong>Posting Rhythm</strong> - Bot-like regularity</li>
+            <li>🌙 <strong>24/7 Activity</strong> - No sleep gaps</li>
+            <li>📝 <strong>N-gram Templates</strong> - Caption templates</li>
+            <li>🏭 <strong>Account Clustering</strong> - Batch creation detection</li>
+          </ul>
+          <h2>Advanced Settings</h2>
+          <p>Click "Advanced CIB Settings" to fine-tune detection parameters:</p>
+          <ul>
+            <li><strong>Semantic Similarity</strong> (0.85) - AI caption threshold</li>
+            <li><strong>N-gram Overlap</strong> (0.3) - Template detection</li>
+            <li><strong>Username Similarity</strong> (0.8) - Name matching</li>
+            <li><strong>TF-IDF Threshold</strong> (0.5) - Rare hashtag sensitivity</li>
+            <li><strong>Z-Score Threshold</strong> (2) - Volume outliers</li>
+            <li><strong>Burst Min Posts</strong> (5) - Burst trigger</li>
+            <li><strong>Rhythm CV</strong> (0.1) - Regularity threshold</li>
+            <li><strong>Night Gap</strong> (7200s) - 24/7 detection</li>
+            <li><strong>Cluster Size</strong> (5) - Account creation groups</li>
+            <li><strong>Cross-Indicator Bonus</strong> (0.3) - Score multiplier</li>
+          </ul>
+          <h2>Important Notes</h2>
+          <p><strong>⚠️ These are indicators, not proof.</strong> Always verify findings manually and consider context.</p>
+          <p><strong>Privacy:</strong> All processing happens in your browser. No data is sent to servers.</p>
+          <p><strong>Legitimate Coordination:</strong> Activist campaigns, fan communities, and event promotions may trigger detection. Context matters!</p>
+        `;
+      }
+    }
+
+    // Open modal
+    helpBtn.addEventListener('click', () => {
+      helpModal.classList.add('active');
+      if (helpBody.innerHTML.includes('Loading guide')) {
+        loadReadme();
+      }
+    });
+
+    // Close modal
+    helpClose.addEventListener('click', () => {
+      helpModal.classList.remove('active');
+    });
+
+    // Close on overlay click
+    helpModal.addEventListener('click', () => {
+      helpModal.classList.remove('active');
+    });
+
+    // Prevent closing when clicking content
+    document.querySelector('.help-content').addEventListener('click', (e) => {
+      e.stopPropagation();
+    });
+
+    // Close on Escape key
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && helpModal.classList.contains('active')) {
+        helpModal.classList.remove('active');
+      }
+    });
+  </script>
+</body>
+</html>
