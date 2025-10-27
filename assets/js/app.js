@@ -2372,23 +2372,39 @@ function openNodeModal(node) {
   // Process CIB reasons to make account names clickable
   let cibReasonsHTML = '';
   if (node.suspicious && node.cibReasons) {
-    cibReasonsHTML = node.cibReasons.map(reason => {
-      // Extract username from patterns like "with UserName" or "with @UserName"
-      // This pattern handles most username formats including those with numbers and underscores
-      const withPattern = /with\s+(@?)([a-zA-Z0-9_.-]+)/;
-      const match = reason.match(withPattern);
+    // Get all user labels from the graph to build a dynamic regex
+    const allUserLabels = nodes
+      .filter(n => n.type === 'user' && n.label)
+      .map(n => n.label);
       
-      if (match && match[2]) {
-        const username = match[2];
-        // Make the username clickable
-        const clickableReason = reason.replace(
-          match[0],
-          `with <a href="#" class="comparison-link" data-username="${username}" style="color:#dc2626; text-decoration:underline; font-weight:600; cursor:pointer;">${match[1]}${username}</a>`
-        );
-        return `<li style="margin:.15rem 0; color:#991b1b;">${clickableReason}</li>`;
-      }
-      return `<li style="margin:.15rem 0; color:#991b1b;">${reason}</li>`;
-    }).join('');
+    // Sort by length descending to prioritize matching longer usernames first (e.g., "user_long" before "user")
+    allUserLabels.sort((a, b) => b.length - a.length);
+
+    if (allUserLabels.length > 0) {
+      // Escape special regex characters in labels
+      const escapedLabels = allUserLabels.map(label => label.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'));
+
+      // Create a regex that matches any of the user labels, optionally preceded by '@'
+      // Use word boundaries (\b) to avoid matching substrings within other words
+      const usernameRegex = new RegExp(`\\b(@?(${escapedLabels.join('|')}))\\b`, 'g');
+
+      cibReasonsHTML = node.cibReasons.map(reason => {
+        const processedReason = reason.replace(usernameRegex, (match, p1, p2) => {
+          // p1 is the full match with optional '@' (e.g., "@user" or "user")
+          // p2 is the username without '@' (e.g., "user")
+          const username = p2;
+          // Double-check that the matched name corresponds to a real node
+          if (findNodeByUsername(username)) {
+            return `<a href="#" class="comparison-link" data-username="${username}" style="color:#dc2626; text-decoration:underline; font-weight:600; cursor:pointer;">${p1}</a>`;
+          }
+          return match; // Return original match if not a valid user
+        });
+        return `<li style="margin:.15rem 0; color:#991b1b;">${processedReason}</li>`;
+      }).join('');
+    } else {
+      // Fallback for when there are no user labels
+      cibReasonsHTML = node.cibReasons.map(reason => `<li style="margin:.15rem 0; color:#991b1b;">${reason}</li>`).join('');
+    }
   }
 
   modalBody.innerHTML = `
