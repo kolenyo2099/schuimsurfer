@@ -1,4 +1,40 @@
-// assets/js/cib-worker.js
+// CIB Worker
+
+import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.1';
+
+// Skip local model check and use remote hosted model
+env.allowLocalModels = false;
+
+// =========================
+// Embeddings Logic (from embeddings.js)
+// =========================
+let extractor = null;
+
+async function initEmbeddingModel() {
+    if (extractor) return extractor;
+
+    self.postMessage({ status: 'progress', text: 'Loading AI model (~23MB)...' });
+
+    extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
+        quantized: true, // Use smaller, quantized model for better performance
+        progress_callback: (progress) => {
+            self.postMessage({ status: 'progress', text: `Downloading model: ${progress.file} (${Math.round(progress.percentage)}%)` });
+        }
+    });
+
+    self.postMessage({ status: 'progress', text: 'AI model ready.' });
+    return extractor;
+}
+
+async function getEmbedding(text) {
+  const model = await initEmbeddingModel();
+  const output = await model(text, { pooling: 'mean', normalize: true });
+  return Array.from(output.data);
+}
+
+function cosineSimilarity(vecA, vecB) {
+  return vecA.reduce((sum, a, i) => sum + a * vecB[i], 0);
+}
 
 
 // =========================
@@ -154,10 +190,18 @@ function detectTemporalBursts(postsByUser, timeWindow, minPosts = 5) {
 // CIB Detection Logic (from app.js)
 // =========================
 async function detectCIB(filteredData, params, timeWindow) {
+    console.log("CIB detection started with params:", params);
     const results = { suspiciousUsers: new Set(), indicators: {}, userScores: new Map(), userReasons: new Map() };
     self.postMessage({ status: 'progress', text: 'Calculating statistics...' });
 
+    if (params.semanticEnabled) {
+        console.log("Initializing embedding model...");
+        await initEmbeddingModel();
+        console.log("Embedding model initialized.");
+    }
+
     const stats = calculateDatasetStatistics(filteredData);
+    console.log("Dataset stats:", stats);
     const postsByUser = new Map();
     filteredData.forEach(post => {
         const userId = post.data?.author?.id;
@@ -185,6 +229,7 @@ async function detectCIB(filteredData, params, timeWindow) {
         }
     }
     results.indicators.synchronized = synchGroups.length;
+    console.log(`Found ${synchGroups.length} synchronized groups.`);
 
     self.postMessage({ status: 'progress', text: 'Analyzing hashtag usage...' });
     const userHashtagSets = new Map();
@@ -216,6 +261,7 @@ async function detectCIB(filteredData, params, timeWindow) {
         }
     });
     results.indicators.identicalHashtags = identicalHashtagUsers;
+    console.log(`Found ${identicalHashtagUsers} users with identical rare hashtags.`);
 
     self.postMessage({ status: 'progress', text: 'Analyzing usernames...' });
     const usernames = new Map();
@@ -247,6 +293,7 @@ async function detectCIB(filteredData, params, timeWindow) {
         }
     });
     results.indicators.similarUsernames = similarUsernameCount;
+    console.log(`Found ${similarUsernameCount} users with similar usernames.`);
 
     self.postMessage({ status: 'progress', text: 'Analyzing posting volume...' });
     results.indicators.highVolume = 0;
@@ -263,12 +310,39 @@ async function detectCIB(filteredData, params, timeWindow) {
     self.postMessage({ status: 'progress', text: 'Detecting temporal bursts...' });
     const bursts = detectTemporalBursts(postsByUser, timeWindow, params.burstPosts);
     results.indicators.temporalBursts = bursts.length;
+    console.log(`Found ${bursts.length} temporal bursts.`);
 
     postsByUser.forEach((posts, userId) => {
         if (analyzePostingRhythm(posts, params.rhythmCV).regular) results.suspiciousUsers.add(userId);
         const nightPosting = analyzeNightPosting(posts, params.nightGap);
         if (nightPosting.suspicious) results.suspiciousUsers.add(userId);
     });
+
+    let semanticGroups = [];
+    if (params.semanticEnabled) {
+        self.postMessage({ status: 'progress', text: 'Analyzing caption similarity (AI)...' });
+        const captionEmbeddings = new Map();
+        for (const post of filteredData) {
+            const userId = post.data?.author?.id;
+            const caption = post.data?.desc || '';
+            if (userId && caption.length >= 20) {
+                const embedding = await getEmbedding(caption);
+                captionEmbeddings.set(post.item_id, { caption, embedding, userId });
+            }
+        }
+        const embedArray = Array.from(captionEmbeddings.values());
+        for (let i = 0; i < embedArray.length; i++) {
+            for (let j = i + 1; j < embedArray.length; j++) {
+                const similarity = cosineSimilarity(embedArray[i].embedding, embedArray[j].embedding);
+                if (similarity >= params.semanticThreshold) {
+                    results.suspiciousUsers.add(embedArray[i].userId).add(embedArray[j].userId);
+                    semanticGroups.push({ users: [embedArray[i].userId, embedArray[j].userId], similarity: similarity.toFixed(3) });
+                }
+            }
+        }
+    }
+    results.indicators.semanticDuplicates = semanticGroups.length;
+    console.log(`Found ${semanticGroups.length} semantic groups.`);
 
     self.postMessage({ status: 'progress', text: 'Analyzing caption templates...' });
     const captions = new Map();
@@ -285,11 +359,13 @@ async function detectCIB(filteredData, params, timeWindow) {
         }
     }
     results.indicators.templateCaptions = captionPairs.length;
+    console.log(`Found ${captionPairs.length} template caption pairs.`);
 
     self.postMessage({ status: 'progress', text: 'Analyzing account creation...' });
     const creationClusters = detectAccountCreationClusters(filteredData, 86400, params.clusterSize);
     results.indicators.accountCreationClusters = creationClusters.length;
     creationClusters.forEach(cluster => cluster.forEach(userId => results.suspiciousUsers.add(userId)));
+    console.log(`Found ${creationClusters.length} account creation clusters.`);
 
     const userIdToName = new Map();
     filteredData.forEach(p => { if(p.data?.author?.id) userIdToName.set(p.data.author.id, p.data.author.uniqueId || p.data.author.nickname || `user_${p.data.author.id}`)});
@@ -348,6 +424,19 @@ async function detectCIB(filteredData, params, timeWindow) {
         const nightPosting = analyzeNightPosting(userPosts, params.nightGap);
         if (nightPosting.suspicious) { score += 25; reasons.push(`24/7 posting pattern (max gap: ${Math.floor(nightPosting.avgMaxGap / 3600)}h)`);}
 
+        const semanticPartners = new Set();
+        semanticGroups.forEach(g => {
+            if (g.users.includes(userId)) {
+                g.users.forEach(p => {
+                    if (p !== userId) semanticPartners.add(userIdToName.get(p) || 'unknown');
+                });
+            }
+        });
+        if (semanticPartners.size > 0) {
+            score += 25;
+            reasons.push(`Semantically similar captions with: ${[...semanticPartners].slice(0, 5).join(', ')}`);
+        }
+
         const templatePartners = new Set();
         captionPairs.forEach(p => {
             if (p.users.includes(userId)) {
@@ -368,9 +457,20 @@ async function detectCIB(filteredData, params, timeWindow) {
             }
         });
 
-        if (reasons.length >= 2) score *= (1 + (params.crossMultiplier * (reasons.length - 1)));
+        if (reasons.length >= 2) {
+          const multiplier = 1 + (params.crossMultiplier * reasons.length);
+          score = Math.min(100, score * multiplier);
+        }
 
-        results.userScores.set(userId, Math.min(100, Math.round(score)));
+        const reasonText = reasons.join(' ').toLowerCase();
+        if (reasonText.includes('similar username') && reasonText.includes('created with')) {
+            score = Math.min(100, score + 20);
+        }
+        if (reasonText.includes('synchronized') && reasonText.includes('regular posting')) {
+            score = Math.min(100, score + 15);
+        }
+
+        results.userScores.set(userId, Math.round(score));
         results.userReasons.set(userId, reasons);
     });
 
