@@ -2715,8 +2715,35 @@ function openNodeModal(node) {
   let cibReasonsHTML = '';
   if (node.suspicious && node.cibReasons) {
     cibReasonsHTML = node.cibReasons.map(reason => {
-      // Extract username from patterns like "with UserName" or "with @UserName"
-      // This pattern handles most username formats including those with numbers and underscores
+      // Check for patterns with multiple comma-separated usernames
+      // Patterns: "Synchronized posting with:", "Rare hashtag combinations with:", "Similar username pattern with:"
+      const multiUserPattern = /^((?:Synchronized posting|Rare hashtag combinations|Similar username pattern) with:\s*)(.+)$/;
+      const multiUserMatch = reason.match(multiUserPattern);
+      
+      if (multiUserMatch && multiUserMatch[2]) {
+        // Extract the list of usernames and handle "and X more" suffix
+        let usernameText = multiUserMatch[2];
+        let moreSuffix = '';
+        
+        // Check if there's an "and X more" suffix at the end
+        const moreMatch = usernameText.match(/(.+?)\s+(and\s+\d+\s+more)$/);
+        if (moreMatch) {
+          usernameText = moreMatch[1];
+          moreSuffix = moreMatch[2];
+        }
+        
+        // Split usernames by comma and make each clickable
+        const usernames = usernameText.split(',').map(u => u.trim()).filter(u => u.length > 0);
+        const clickableUsernames = usernames.map(username => {
+          return `<a href="#" class="comparison-link" data-username="${username}" style="color:#dc2626; text-decoration:underline; font-weight:600; cursor:pointer;">${username}</a>`;
+        });
+        
+        // Join with commas and add the "and X more" suffix if present
+        const clickableReason = multiUserMatch[1] + clickableUsernames.join(', ') + (moreSuffix ? ' ' + moreSuffix : '');
+        return `<li style="margin:.15rem 0; color:#991b1b;">${clickableReason}</li>`;
+      }
+      
+      // Check for "with" pattern (single username) - handles patterns like "Semantically similar captions... with username"
       const withPattern = /with\s+(@?)([a-zA-Z0-9_.-]+)/;
       const match = reason.match(withPattern);
       
@@ -2729,6 +2756,7 @@ function openNodeModal(node) {
         );
         return `<li style="margin:.15rem 0; color:#991b1b;">${clickableReason}</li>`;
       }
+      
       return `<li style="margin:.15rem 0; color:#991b1b;">${reason}</li>`;
     }).join('');
   }
