@@ -1,32 +1,5 @@
 // assets/js/cib-worker.js
 
-// Import transformer pipeline directly in the worker
-import { pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.1';
-
-// =========================
-// Embeddings Logic (from embeddings.js)
-// =========================
-let extractor = null;
-
-async function initEmbeddingModel() {
-  if (!extractor) {
-    self.postMessage({ status: 'progress', text: 'Loading AI model (~23MB)...' });
-    extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
-    self.postMessage({ status: 'progress', text: 'AI model ready.' });
-  }
-  return extractor;
-}
-
-async function getEmbedding(text) {
-  const model = await initEmbeddingModel();
-  const output = await model(text, { pooling: 'mean', normalize: true });
-  return Array.from(output.data);
-}
-
-function cosineSimilarity(vecA, vecB) {
-  return vecA.reduce((sum, a, i) => sum + a * vecB[i], 0);
-}
-
 
 // =========================
 // Analytics Logic (from analytics.js)
@@ -115,13 +88,27 @@ function analyzePostingRhythm(posts, cvThreshold = 0.1) {
 }
 
 function analyzeNightPosting(posts, gapThreshold = 7200) {
-    if (posts.length < 10) return { suspicious: false };
-    const timestamps = posts.map(p => p.timestamp).sort((a, b) => a - b);
-    let maxGap = 0;
-    for (let i = 1; i < timestamps.length; i++) {
-        maxGap = Math.max(maxGap, timestamps[i] - timestamps[i - 1]);
-    }
-    return { suspicious: maxGap > gapThreshold, maxGap };
+    if (posts.length < 10) return { suspicious: false, avgMaxGap: null };
+    const timestamps = posts.map(p => p.timestamp).sort();
+    const dailyGaps = new Map();
+    timestamps.forEach(ts => {
+      const date = new Date(ts * 1000);
+      const dayKey = `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+      if (!dailyGaps.has(dayKey)) dailyGaps.set(dayKey, []);
+      dailyGaps.get(dayKey).push(date.getHours() * 3600 + date.getMinutes() * 60 + date.getSeconds());
+    });
+    const avgMaxGap = Array.from(dailyGaps.values()).map(day => {
+      day.sort((a, b) => a - b);
+      let maxGap = 0;
+      for (let i = 1; i < day.length; i++) {
+        maxGap = Math.max(maxGap, day[i] - day[i - 1]);
+      }
+      if (day.length > 1) {
+        maxGap = Math.max(maxGap, 86400 - day[day.length - 1] + day[0]);
+      }
+      return maxGap;
+    }).reduce((a, b) => a + b, 0) / (dailyGaps.size || 1);
+    return { suspicious: avgMaxGap < gapThreshold, avgMaxGap };
 }
 
 function detectAccountCreationClusters(posts, timeWindow = 86400, minClusterSize = 5) {
@@ -169,10 +156,6 @@ function detectTemporalBursts(postsByUser, timeWindow, minPosts = 5) {
 async function detectCIB(filteredData, params, timeWindow) {
     const results = { suspiciousUsers: new Set(), indicators: {}, userScores: new Map(), userReasons: new Map() };
     self.postMessage({ status: 'progress', text: 'Calculating statistics...' });
-
-    if (params.semanticEnabled) {
-        await initEmbeddingModel();
-    }
 
     const stats = calculateDatasetStatistics(filteredData);
     const postsByUser = new Map();
@@ -283,47 +266,25 @@ async function detectCIB(filteredData, params, timeWindow) {
 
     postsByUser.forEach((posts, userId) => {
         if (analyzePostingRhythm(posts, params.rhythmCV).regular) results.suspiciousUsers.add(userId);
-        if (analyzeNightPosting(posts, params.nightGap).suspicious) results.suspiciousUsers.add(userId);
+        const nightPosting = analyzeNightPosting(posts, params.nightGap);
+        if (nightPosting.suspicious) results.suspiciousUsers.add(userId);
     });
-
-    let semanticGroups = [];
-    if (params.semanticEnabled) {
-        self.postMessage({ status: 'progress', text: 'Analyzing caption similarity (AI)...' });
-        const captionEmbeddings = new Map();
-        for (const post of filteredData) {
-            const userId = post.data?.author?.id;
-            const caption = post.data?.desc || '';
-            if (userId && caption.length >= 20) {
-                const embedding = await getEmbedding(caption);
-                captionEmbeddings.set(post.item_id, { caption, embedding, userId });
-            }
-        }
-        const embedArray = Array.from(captionEmbeddings.values());
-        for (let i = 0; i < embedArray.length; i++) {
-            for (let j = i + 1; j < embedArray.length; j++) {
-                if (cosineSimilarity(embedArray[i].embedding, embedArray[j].embedding) >= params.semanticThreshold) {
-                    results.suspiciousUsers.add(embedArray[i].userId).add(embedArray[j].userId);
-                    semanticGroups.push({ users: [embedArray[i].userId, embedArray[j].userId], similarity: cosineSimilarity(embedArray[i].embedding, embedArray[j].embedding) });
-                }
-            }
-        }
-    }
-    results.indicators.semanticDuplicates = semanticGroups.length;
 
     self.postMessage({ status: 'progress', text: 'Analyzing caption templates...' });
     const captions = new Map();
     filteredData.forEach(p => { if (p.data?.author?.id && p.data.desc) captions.set(p.item_id, { userId: p.data.author.id, desc: p.data.desc }); });
     const captionArray = Array.from(captions.values());
-    let templatePairs = 0;
+    const captionPairs = [];
     for (let i = 0; i < captionArray.length; i++) {
         for (let j = i + 1; j < captionArray.length; j++) {
-            if (ngramOverlap(captionArray[i].desc, captionArray[j].desc) >= params.ngramThreshold) {
+            const overlap = ngramOverlap(captionArray[i].desc, captionArray[j].desc);
+            if (overlap >= params.ngramThreshold) {
                 results.suspiciousUsers.add(captionArray[i].userId).add(captionArray[j].userId);
-                templatePairs++;
+                captionPairs.push({users: [captionArray[i].userId, captionArray[j].userId], overlap});
             }
         }
     }
-    results.indicators.templateCaptions = templatePairs;
+    results.indicators.templateCaptions = captionPairs.length;
 
     self.postMessage({ status: 'progress', text: 'Analyzing account creation...' });
     const creationClusters = detectAccountCreationClusters(filteredData, 86400, params.clusterSize);
@@ -336,17 +297,79 @@ async function detectCIB(filteredData, params, timeWindow) {
     results.suspiciousUsers.forEach(userId => {
         let score = 0;
         const reasons = [];
-        if (synchGroups.some(g => g.u1 === userId || g.u2 === userId)) { score += 25; reasons.push('Synchronized posting'); }
-        if (Array.from(hashtagSequences.values()).some(d => d.users.has(userId) && d.users.size >= params.minHashtagGroupSize)) { score += 20; reasons.push('Rare hashtag combinations'); }
-        if (Array.from(usernameGroups.values()).some(u => u.has(userId) && u.size >= params.minUsernameGroupSize)) { score += 10; reasons.push('Similar username pattern'); }
+
+        const userSyncGroups = synchGroups.filter(g => g.u1 === userId || g.u2 === userId);
+        if (userSyncGroups.length > 0) {
+            score += 25;
+            const partners = userSyncGroups.map(g => userIdToName.get(g.u1 === userId ? g.u2 : g.u1) || 'unknown').slice(0, 5);
+            reasons.push(`Synchronized posting with: ${partners.join(', ')}`);
+        }
+
+        const userHashtagPartners = new Set();
+        hashtagSequences.forEach(data => {
+            if (data.users.has(userId) && data.users.size >= params.minHashtagGroupSize) {
+                data.users.forEach(partnerId => {
+                    if (partnerId !== userId) userHashtagPartners.add(userIdToName.get(partnerId) || 'unknown');
+                });
+            }
+        });
+        if (userHashtagPartners.size > 0) {
+            score += 20;
+            reasons.push(`Rare hashtag combinations with: ${[...userHashtagPartners].slice(0, 5).join(', ')}`);
+        }
+
+        const userUsernamePartners = new Set();
+        usernameGroups.forEach(users => {
+            if (users.has(userId) && users.size >= params.minUsernameGroupSize) {
+                users.forEach(partnerId => {
+                    if (partnerId !== userId) userUsernamePartners.add(userIdToName.get(partnerId) || 'unknown');
+                });
+            }
+        });
+        if (userUsernamePartners.size > 0) {
+            score += 10;
+            reasons.push(`Similar username pattern with: ${[...userUsernamePartners].slice(0, 5).join(', ')}`);
+        }
+
         const userPosts = postsByUser.get(userId) || [];
-        if (userPosts.length >= params.minHighVolumePosts && (userPosts.length - stats.posts.mean) / (stats.posts.stdDev || 1) > params.zscoreThreshold) { score += 15; reasons.push('High-volume posting'); }
+        if (userPosts.length >= params.minHighVolumePosts) {
+            const zScore = (userPosts.length - stats.posts.mean) / (stats.posts.stdDev || 1);
+            if (zScore > params.zscoreThreshold) {
+                score += 15;
+                reasons.push(`High-volume posting (z-score: ${zScore.toFixed(1)})`);
+            }
+        }
+
         if (bursts.some(b => b.userId === userId)) { score += 15; reasons.push('Posting burst'); }
-        if (analyzePostingRhythm(userPosts, params.rhythmCV).regular) { score += 20; reasons.push('Highly regular posting rhythm'); }
-        if (analyzeNightPosting(userPosts, params.nightGap).suspicious) { score += 25; reasons.push('24/7 posting pattern'); }
-        if (semanticGroups.some(g => g.users.includes(userId))) { score += 25; reasons.push('Semantically similar captions'); }
-        if (creationClusters.some(c => c.has(userId))) { score += 30; reasons.push('Account creation cluster'); }
-        if (reasons.length >= 2) score *= (1 + (params.crossMultiplier * reasons.length));
+
+        const rhythm = analyzePostingRhythm(userPosts, params.rhythmCV);
+        if (rhythm.regular) { score += 20; reasons.push(`Highly regular posting rhythm (CV: ${(rhythm.cv * 100).toFixed(1)}%)`); }
+
+        const nightPosting = analyzeNightPosting(userPosts, params.nightGap);
+        if (nightPosting.suspicious) { score += 25; reasons.push(`24/7 posting pattern (max gap: ${Math.floor(nightPosting.avgMaxGap / 3600)}h)`);}
+
+        const templatePartners = new Set();
+        captionPairs.forEach(p => {
+            if (p.users.includes(userId)) {
+                p.users.forEach(u => {
+                    if (u !== userId) templatePartners.add(userIdToName.get(u) || 'unknown');
+                });
+            }
+        });
+        if (templatePartners.size > 0) {
+            score += 20;
+            reasons.push(`Template caption with: ${[...templatePartners].slice(0, 5).join(', ')}`);
+        }
+
+        creationClusters.forEach(cluster => {
+            if (cluster.has(userId)) {
+                score += 30;
+                reasons.push(`Account created with ${cluster.size - 1} others within 24 hours`);
+            }
+        });
+
+        if (reasons.length >= 2) score *= (1 + (params.crossMultiplier * (reasons.length - 1)));
+
         results.userScores.set(userId, Math.min(100, Math.round(score)));
         results.userReasons.set(userId, reasons);
     });

@@ -1,7 +1,17 @@
+import { initEmbeddingModel, getEmbedding, cosineSimilarity } from './embeddings.js';
 import { normalizeRawData } from './normalization.js';
 import {
   calculateStats,
-  filterData
+  filterData,
+  calculateDatasetStatistics,
+  calculateTFIDF,
+  getNGrams,
+  ngramOverlap,
+  levenshteinDistance,
+  analyzePostingRhythm,
+  analyzeNightPosting,
+  detectAccountCreationClusters,
+  detectTemporalBursts,
 } from './analytics.js';
 
 // =========================
@@ -443,86 +453,139 @@ function resetCibParams() {
 }
 
 // =========================
-// CIB detection (via Web Worker)
+// CIB detection (heuristics)
 // =========================
-let cibWorker = null;
-
-function detectCIB() {
-  if (cibWorker) {
-    // Terminate existing worker if a new analysis is started
-    cibWorker.terminate();
-  }
-
-  cibWorker = new Worker('assets/js/cib-worker.js', { type: 'module' });
-
+async function detectCIB() {
   loading.classList.add('active');
-  loadingText.textContent = 'Starting CIB analysis...';
+  loadingText.textContent = 'Analyzing coordinated behavior patterns...';
+
+  const cibWorker = new Worker('assets/js/cib-worker.js');
+
+  cibWorker.onmessage = async (event) => {
+    const { status, results, error, text } = event.data;
+
+    if (status === 'progress') {
+        loadingText.textContent = text;
+        return;
+    }
+
+    if (status === 'error') {
+        console.error("CIB Worker Error:", error);
+        loading.classList.remove('active');
+        alert(`An error occurred during CIB detection: ${error}`);
+        cibWorker.terminate();
+        return;
+    }
+
+    // Re-hydrate Maps and Sets from the worker's serialized results
+    results.suspiciousUsers = new Set(results.suspiciousUsers);
+    results.userScores = new Map(results.userScores);
+    results.userReasons = new Map(results.userReasons);
+
+    const params = getCibParams();
+
+    // If semantic analysis is enabled, run it on the main thread now
+    if (params.semanticEnabled) {
+        loadingText.textContent = 'Analyzing caption similarity (AI)...';
+
+        // This is the semantic analysis code moved back from the worker
+        const captionEmbeddings = new Map();
+        for (const post of filteredData) {
+            const userId = post.data?.author?.id;
+            const caption = post.data?.desc || '';
+            if (!userId || caption.length < 20) continue;
+
+            const embedding = await getEmbedding(caption);
+            captionEmbeddings.set(post.item_id, { caption, embedding, userId });
+        }
+
+        const embedArray = Array.from(captionEmbeddings.values());
+        for (let i = 0; i < embedArray.length; i++) {
+            for (let j = i + 1; j < embedArray.length; j++) {
+                const similarity = cosineSimilarity(embedArray[i].embedding, embedArray[j].embedding);
+
+                if (similarity >= params.semanticThreshold) {
+                    const user1 = embedArray[i].userId;
+                    const user2 = embedArray[j].userId;
+                    results.suspiciousUsers.add(user1);
+                    results.suspiciousUsers.add(user2);
+
+                    // Add reason and update score
+                    const reason = `Semantically similar captions (${similarity.toFixed(3)})`;
+                    const reasons1 = results.userReasons.get(user1) || [];
+                    if (!reasons1.some(r => r.startsWith('Semantically similar'))) {
+                        reasons1.push(reason + ` with ${idToNode.get(user2)?.label || user2}`);
+                        results.userReasons.set(user1, reasons1);
+                        results.userScores.set(user1, (results.userScores.get(user1) || 0) + 25);
+                    }
+
+                    const reasons2 = results.userReasons.get(user2) || [];
+                     if (!reasons2.some(r => r.startsWith('Semantically similar'))) {
+                        reasons2.push(reason + ` with ${idToNode.get(user1)?.label || user1}`);
+                        results.userReasons.set(user2, reasons2);
+                        results.userScores.set(user2, (results.userScores.get(user2) || 0) + 25);
+                    }
+                }
+            }
+        }
+    }
+
+    cibDetection = results;
+    displayCIBResults(results);
+
+    // Mark nodes as suspicious
+    if (nodes.length > 0) {
+      nodes.forEach(node => {
+        const plainId = node.id.replace(/^u_/, '');
+        if (results.suspiciousUsers.has(node.id) || results.suspiciousUsers.has(plainId)) {
+          node.suspicious = true;
+          node.cibScore = results.userScores.get(node.id) || results.userScores.get(plainId) || 0;
+          node.cibReasons = results.userReasons.get(node.id) || results.userReasons.get(plainId) || [];
+        } else {
+          // Ensure non-suspicious nodes are marked as such
+          node.suspicious = false;
+          node.cibScore = 0;
+          node.cibReasons = [];
+        }
+      });
+      drawNetwork();
+    }
+    if (statElements.suspicious) statElements.suspicious.textContent = results.suspiciousUsers.size;
+
+    // Enable CIB export buttons
+    exportCsvBtn.disabled = false;
+    exportReportBtn.disabled = false;
+
+    loading.classList.remove('active');
+    updateCoach();
+    cibWorker.terminate();
+  };
+
+  cibWorker.onerror = (error) => {
+    console.error("CIB Worker Error:", error);
+    loading.classList.remove('active');
+    alert("An error occurred during CIB detection. See console for details.");
+    cibWorker.terminate();
+  };
 
   const params = getCibParams();
   const timeWindow = parseInt(timeWindowInput.value, 10);
 
-  // Send data to the worker to start analysis
-  cibWorker.postMessage({
-    filteredData,
-    params,
-    timeWindow
-  });
-
-  // Handle messages from the worker
-  cibWorker.onmessage = (event) => {
-    const { status, results, text, error } = event.data;
-
-    if (status === 'progress') {
-      loadingText.textContent = text;
-    } else if (status === 'complete') {
-      // Reconstruct Maps and Sets from worker's serialized data
-      const finalResults = {
-          ...results,
-          suspiciousUsers: new Set(results.suspiciousUsers),
-          userScores: new Map(results.userScores),
-          userReasons: new Map(results.userReasons),
-      };
-
-      cibDetection = finalResults;
-      displayCIBResults(finalResults);
-
-      // Mark nodes as suspicious
-      if (nodes.length > 0) {
-        nodes.forEach(node => {
-          const plainId = node.id.replace(/^u_/, '');
-          if (finalResults.suspiciousUsers.has(node.id) || finalResults.suspiciousUsers.has(plainId)) {
-            node.suspicious = true;
-            node.cibScore = finalResults.userScores.get(node.id) || finalResults.userScores.get(plainId) || 0;
-            node.cibReasons = finalResults.userReasons.get(node.id) || finalResults.userReasons.get(plainId) || [];
-          }
+  if (params.semanticEnabled) {
+      initEmbeddingModel().then(() => {
+           cibWorker.postMessage({
+                filteredData,
+                params,
+                timeWindow,
+            });
+      });
+  } else {
+       cibWorker.postMessage({
+            filteredData,
+            params,
+            timeWindow,
         });
-        drawNetwork();
-      }
-      
-      if (statElements.suspicious) statElements.suspicious.textContent = finalResults.suspiciousUsers.size;
-
-      // Enable export buttons
-      exportCsvBtn.disabled = false;
-      exportReportBtn.disabled = false;
-
-      loading.classList.remove('active');
-      updateCoach();
-      cibWorker.terminate(); // Clean up the worker
-      cibWorker = null;
-    } else if (status === 'error') {
-      console.error('CIB Worker Error:', error);
-      alert('An error occurred during CIB detection: ' + error);
-      loading.classList.remove('active');
-      cibWorker.terminate();
-      cibWorker = null;
-    }
-  };
-
-  cibWorker.onerror = (error) => {
-    console.error('CIB Worker Error:', error);
-    alert('Failed to run CIB detection worker. See console for details.');
-    loading.classList.remove('active');
-  };
+  }
 }
 
 function displayCIBResults(results) {
