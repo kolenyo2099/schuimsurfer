@@ -23,6 +23,7 @@ import {
   selectTopNodesForVisualization,
   perfMonitor
 } from './performance-utils.js';
+import { Graph } from 'https://unpkg.com/@cosmos.gl/graph@2.5.0/dist/index.js?module';
 
 // =========================
 // Global state
@@ -33,17 +34,15 @@ let graphData = null;
 let nodes = [];
 let communities = null;
 let cibDetection = null;
-let animationFrame = null;
-
-// Zoom and pan state
-let transform = {
-  x: 0,      // pan offset X
-  y: 0,      // pan offset Y
-  scale: 1   // zoom level
-};
-let isDragging = false;
-let dragStart = { x: 0, y: 0 };
 let networkMetrics = null;
+
+// Cosmograph state
+let cosmosGraph = null;
+let cosmosNodeIndex = new Map();   // node.id -> cosmograph index
+let cosmosHoverIndex = null;
+let cosmosClusterLabels = [];
+let currentClusterStats = new Map();
+let nodeSizeStats = null;
 
 // Expose nodes globally for WebGL renderer access
 window.nodes = nodes;
@@ -52,6 +51,35 @@ window.nodes = nodes;
 let idToNode = new Map();     // node.id -> node (with x,y)
 let adjacency = new Map();    // node.id -> Set(neighborIds)
 let hoveredNode = null;
+
+function buildAdjacency(network) {
+  adjacency = new Map();
+  if (!network || !Array.isArray(network.nodes)) return;
+
+  const ensureEntry = (id) => {
+    if (id === undefined || id === null) return null;
+    const key = id;
+    if (!adjacency.has(key)) {
+      adjacency.set(key, new Set());
+    }
+    return key;
+  };
+
+  network.nodes.forEach(node => {
+    ensureEntry(node?.id);
+  });
+
+  if (!Array.isArray(network.links)) return;
+
+  network.links.forEach(link => {
+    const sourceId = ensureEntry(link?.source?.id ?? link?.source);
+    const targetId = ensureEntry(link?.target?.id ?? link?.target);
+    if (sourceId === null || targetId === null || sourceId === targetId) return;
+
+    adjacency.get(sourceId)?.add(targetId);
+    adjacency.get(targetId)?.add(sourceId);
+  });
+}
 
 // =========================
 // DOM elements
@@ -77,10 +105,12 @@ const cibSettingsBtn = document.getElementById('cib-settings-btn');
 const cibSettingsPanel = document.getElementById('cib-settings-panel');
 const closeCibSettings = document.getElementById('close-cib-settings');
 const resetCibParamsBtn = document.getElementById('reset-cib-params');
-const canvas = document.getElementById('network-canvas');
-let ctx = null; // Don't create context yet - let renderer decide
-let gl = null;
-let gpuRenderer = null;
+const graphContainer = document.getElementById('network-canvas');
+const clusterLabelLayer = document.createElement('div');
+clusterLabelLayer.style.position = 'absolute';
+clusterLabelLayer.style.inset = '0';
+clusterLabelLayer.style.pointerEvents = 'none';
+graphContainer.appendChild(clusterLabelLayer);
 const emptyState = document.getElementById('empty-state');
 const statsDiv = document.getElementById('stats');
 const nodeInfo = document.getElementById('node-info');
@@ -129,6 +159,135 @@ const thresholdLabels = {
   1:'Very Low (1)',2:'Low (2)',3:'Low-Med (3)',4:'Medium-Low (4)',5:'Medium (5)',
   6:'Medium-High (6)',7:'High-Med (7)',8:'High (8)',9:'Very High (9)',10:'Maximum (10)'
 };
+
+const NODE_TYPE_COLORS = {
+  userVerified: '#2563eb',
+  userUnverified: '#8b5cf6',
+  hashtag: '#10b981',
+  location: '#f59e0b',
+  sound: '#6366f1',
+  music: '#6366f1',
+  default: '#6b7280',
+  noise: '#d1d5db',
+};
+
+const NODE_SIZE_MIN = 6;
+const NODE_SIZE_MAX = 24;
+const NODE_SIZE_UNIFORM = 10;
+
+function getNodeColor(node) {
+  if (!node) return NODE_TYPE_COLORS.default;
+
+  if (node.suspicious) {
+    return '#b91c1c';
+  }
+
+  const noiseId = communities?.noiseClusterId;
+  if (typeof noiseId === 'number') {
+    const cid = communities?.communities?.get(node.id);
+    if (cid === noiseId) {
+      return NODE_TYPE_COLORS.noise;
+    }
+  }
+
+  if (node.type === 'user') {
+    return node.verified ? NODE_TYPE_COLORS.userVerified : NODE_TYPE_COLORS.userUnverified;
+  }
+
+  const typeColor = NODE_TYPE_COLORS[node.type];
+  return typeColor || NODE_TYPE_COLORS.default;
+}
+
+function nodeSize(node) {
+  if (!node) return NODE_SIZE_UNIFORM;
+
+  const mode = nodeSizeBySelect?.value || 'degree';
+  if (mode === 'uniform') {
+    return NODE_SIZE_UNIFORM;
+  }
+
+  if (!nodeSizeStats || nodeSizeStats.mode !== mode) {
+    nodeSizeStats = computeNodeSizeStatsForMode(mode);
+  }
+
+  const metric = getNodeSizeMetric(node, mode);
+  if (!Number.isFinite(metric)) {
+    return nodeSizeStats?.defaultSize ?? NODE_SIZE_UNIFORM;
+  }
+
+  const { min, max, minSize, maxSize, defaultSize } = nodeSizeStats;
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) {
+    return defaultSize;
+  }
+
+  const normalized = (metric - min) / (max - min);
+  const clamped = Math.max(0, Math.min(1, normalized));
+  return minSize + clamped * (maxSize - minSize);
+}
+
+function computeNodeSizeStatsForMode(mode) {
+  const sourceNodes = nodes?.length ? nodes : (graphData?.nodes ?? []);
+  const metrics = sourceNodes
+    .map(node => getNodeSizeMetric(node, mode))
+    .filter(value => Number.isFinite(value));
+
+  if (metrics.length === 0) {
+    return {
+      mode,
+      min: 0,
+      max: 0,
+      minSize: NODE_SIZE_UNIFORM,
+      maxSize: NODE_SIZE_UNIFORM,
+      defaultSize: NODE_SIZE_UNIFORM,
+    };
+  }
+
+  const min = Math.min(...metrics);
+  const max = Math.max(...metrics);
+
+  if (max <= min) {
+    const size = Math.max(NODE_SIZE_MIN, Math.min(NODE_SIZE_MAX, NODE_SIZE_UNIFORM));
+    return {
+      mode,
+      min,
+      max,
+      minSize: size,
+      maxSize: size,
+      defaultSize: size,
+    };
+  }
+
+  return {
+    mode,
+    min,
+    max,
+    minSize: NODE_SIZE_MIN,
+    maxSize: NODE_SIZE_MAX,
+    defaultSize: NODE_SIZE_UNIFORM,
+  };
+}
+
+function getNodeSizeMetric(node, mode) {
+  if (!node) return 0;
+
+  switch (mode) {
+    case 'followers': {
+      if (typeof node.followers === 'number') {
+        return Math.log10(Math.max(0, node.followers) + 1);
+      }
+      if (typeof node.count === 'number') {
+        return Math.log10(Math.max(0, node.count) + 1);
+      }
+      if (typeof node.totalEngagement === 'number') {
+        return Math.log10(Math.max(0, node.totalEngagement) + 1);
+      }
+      return Math.log10((node.degree ?? 0) + 1);
+    }
+    case 'degree':
+    default:
+      return Math.log10((node.degree ?? 0) + 1);
+  }
+}
 
 cibThreshold.addEventListener('input', (e)=>{ 
   const val = e.target.value;
@@ -1043,7 +1202,7 @@ async function detectCIB() {
           node.cibReasons = results.userReasons.get(node.id) || results.userReasons.get(plainId) || [];
         }
       });
-      drawNetwork();
+      refreshCosmosStyling({ updateClusters: false });
     }
 
     if (statElements.suspicious) {
@@ -1378,42 +1537,307 @@ function displayMetrics(metrics) {
 }
 
 function detectCommunities(graph) {
-  if (graph.nodes.length === 0 || graph.links.length === 0) return null;
+  if (!graph || graph.nodes.length === 0) return null;
 
-  // Use cache for community detection (expensive operation)
   return communityDetectionCache.get(graph, {}, () => {
     perfMonitor.start('communityDetection');
 
-    const adj = new Map();
-    graph.nodes.forEach(n => adj.set(n.id, new Set()));
-    graph.links.forEach(l => { adj.get(l.source).add(l.target); adj.get(l.target).add(l.source); });
-
-    const labels = new Map();
-    graph.nodes.forEach((n,i)=>labels.set(n.id, i));
-
-    let changed = true, iterations = 0;
-    const maxIterations = 100;
-
-    while (changed && iterations < maxIterations) {
-      changed = false; iterations++;
-      const shuffled = [...graph.nodes].sort(() => Math.random()-0.5);
-      shuffled.forEach(node => {
-        const neighbors = adj.get(node.id); if (neighbors.size===0) return;
-        const counts = new Map();
-        neighbors.forEach(nb => { const lab = labels.get(nb); counts.set(lab, (counts.get(lab)||0)+1); });
-        let best = labels.get(node.id), bestCount = 0;
-        counts.forEach((c,lab)=>{ if (c>bestCount){ bestCount=c; best=lab; } });
-        if (best !== labels.get(node.id)) { labels.set(node.id, best); changed = true; }
-      });
-    }
-    const uniq = [...new Set(labels.values())];
-    const remap = new Map(); uniq.forEach((lab,i)=>remap.set(lab,i));
-    const out = new Map(); labels.forEach((lab,id)=>out.set(id, remap.get(lab)));
+    const result = runLouvainCommunityDetection(graph);
 
     perfMonitor.end('communityDetection');
 
-    return { communities: out, count: uniq.length };
+    return result;
   });
+}
+
+function runLouvainCommunityDetection(graph) {
+  const baseState = createLouvainState(
+    graph.nodes.map(n => n.id),
+    graph.links.map(link => ({
+      source: link.source.id ?? link.source,
+      target: link.target.id ?? link.target,
+      weight: link.weight || 1,
+    }))
+  );
+
+  if (baseState.totalWeight === 0) {
+    // No edges – collapse everything into a noise cluster
+    const assignments = new Map();
+    baseState.nodeIds.forEach(id => assignments.set(id, 0));
+    return finalizeLouvainClusters(assignments, baseState.adjacency, baseState.nodeIds.length);
+  }
+
+  const levelAssignments = [];
+  let currentState = baseState;
+  let keepIterating = true;
+  let safety = 0;
+
+  while (keepIterating && safety < 10) {
+    const { assignment, moved } = executeLouvainPhase(currentState);
+    levelAssignments.push(assignment);
+    keepIterating = moved;
+    safety += 1;
+
+    if (!moved) {
+      break;
+    }
+
+    currentState = aggregateLouvainGraph(currentState, assignment);
+    if (currentState.nodeIds.length <= 1) {
+      break;
+    }
+  }
+
+  const flattenedAssignments = new Map();
+  baseState.nodeIds.forEach(nodeId => {
+    let community = levelAssignments[0]?.get(nodeId) ?? 0;
+    for (let level = 1; level < levelAssignments.length; level++) {
+      const map = levelAssignments[level];
+      community = map.get(community) ?? community;
+    }
+    flattenedAssignments.set(nodeId, community ?? 0);
+  });
+
+  return finalizeLouvainClusters(flattenedAssignments, baseState.adjacency, baseState.nodeIds.length);
+}
+
+function createLouvainState(nodeIds, links) {
+  const adjacency = new Map();
+  const degrees = new Map();
+  const edges = [];
+
+  nodeIds.forEach(id => {
+    if (!adjacency.has(id)) adjacency.set(id, new Map());
+    if (!degrees.has(id)) degrees.set(id, 0);
+  });
+
+  let totalWeight = 0;
+
+  links.forEach(({ source, target, weight }) => {
+    if (source === undefined || target === undefined) return;
+    const s = source;
+    const t = target;
+    const w = Number.isFinite(weight) ? weight : 1;
+
+    if (!adjacency.has(s)) adjacency.set(s, new Map());
+    if (!adjacency.has(t)) adjacency.set(t, new Map());
+    if (!degrees.has(s)) degrees.set(s, 0);
+    if (!degrees.has(t)) degrees.set(t, 0);
+
+    if (s === t) {
+      const current = adjacency.get(s).get(t) || 0;
+      adjacency.get(s).set(t, current + w);
+      degrees.set(s, (degrees.get(s) || 0) + w * 2);
+    } else {
+      const mapS = adjacency.get(s);
+      const mapT = adjacency.get(t);
+      mapS.set(t, (mapS.get(t) || 0) + w);
+      mapT.set(s, (mapT.get(s) || 0) + w);
+      degrees.set(s, (degrees.get(s) || 0) + w);
+      degrees.set(t, (degrees.get(t) || 0) + w);
+    }
+
+    edges.push({ source: s, target: t, weight: w });
+    totalWeight += w;
+  });
+
+  return {
+    nodeIds: [...nodeIds],
+    adjacency,
+    degrees,
+    totalWeight,
+    links: edges,
+  };
+}
+
+function executeLouvainPhase(state) {
+  const { nodeIds, adjacency, degrees, totalWeight } = state;
+  const nodeCommunities = new Map();
+  const communityDegree = new Map();
+
+  nodeIds.forEach(id => {
+    nodeCommunities.set(id, id);
+    const deg = degrees.get(id) || 0;
+    communityDegree.set(id, deg);
+  });
+
+  let moved = false;
+  let improvement = true;
+  const order = [...nodeIds];
+
+  while (improvement) {
+    improvement = false;
+    shuffleArray(order);
+
+    order.forEach(nodeId => {
+      const nodeDegree = degrees.get(nodeId) || 0;
+      const currentCommunity = nodeCommunities.get(nodeId);
+
+      const neighborWeights = adjacency.get(nodeId) || new Map();
+      const neighborCommunities = new Map();
+
+      neighborWeights.forEach((weight, neighborId) => {
+        if (neighborId === nodeId) return;
+        const neighborCommunity = nodeCommunities.get(neighborId);
+        neighborCommunities.set(
+          neighborCommunity,
+          (neighborCommunities.get(neighborCommunity) || 0) + weight
+        );
+      });
+
+      const currentCommunityAfterRemoval = (communityDegree.get(currentCommunity) || 0) - nodeDegree;
+      communityDegree.set(currentCommunity, currentCommunityAfterRemoval);
+
+      let bestCommunity = currentCommunity;
+      let bestGain = neighborCommunities.get(currentCommunity) || 0;
+      bestGain -= (currentCommunityAfterRemoval * nodeDegree) / (2 * totalWeight);
+
+      neighborCommunities.forEach((weightToCommunity, communityId) => {
+        const sumTot = communityDegree.get(communityId) || 0;
+        const gain = weightToCommunity - (sumTot * nodeDegree) / (2 * totalWeight);
+        if (gain > bestGain + 1e-9) {
+          bestGain = gain;
+          bestCommunity = communityId;
+        }
+      });
+
+      communityDegree.set(bestCommunity, (communityDegree.get(bestCommunity) || 0) + nodeDegree);
+      nodeCommunities.set(nodeId, bestCommunity);
+
+      if (bestCommunity !== currentCommunity) {
+        moved = true;
+        improvement = true;
+      }
+    });
+  }
+
+  const remappedCommunities = new Map();
+  let index = 0;
+  nodeCommunities.forEach(comm => {
+    if (!remappedCommunities.has(comm)) {
+      remappedCommunities.set(comm, index++);
+    }
+  });
+
+  const assignment = new Map();
+  nodeCommunities.forEach((comm, nodeId) => {
+    assignment.set(nodeId, remappedCommunities.get(comm));
+  });
+
+  return { assignment, moved };
+}
+
+function aggregateLouvainGraph(state, assignment) {
+  const communityNodes = new Map();
+  assignment.forEach((community, nodeId) => {
+    if (!communityNodes.has(community)) communityNodes.set(community, []);
+    communityNodes.get(community).push(nodeId);
+  });
+
+  const newNodeIds = [...communityNodes.keys()];
+  const aggregatedWeights = new Map();
+
+  state.links.forEach(({ source, target, weight }) => {
+    const sourceCommunity = assignment.get(source);
+    const targetCommunity = assignment.get(target);
+    if (sourceCommunity === undefined || targetCommunity === undefined) return;
+
+    const key = sourceCommunity <= targetCommunity
+      ? `${sourceCommunity}|${targetCommunity}`
+      : `${targetCommunity}|${sourceCommunity}`;
+    aggregatedWeights.set(key, (aggregatedWeights.get(key) || 0) + weight);
+  });
+
+  const newLinks = [];
+  aggregatedWeights.forEach((weight, key) => {
+    const [a, b] = key.split('|').map(val => (Number.isNaN(Number(val)) ? val : Number(val)));
+    newLinks.push({ source: a, target: b, weight });
+  });
+
+  return createLouvainState(newNodeIds, newLinks);
+}
+
+function finalizeLouvainClusters(assignments, adjacency, nodeCount) {
+  const clusterMembers = new Map();
+  assignments.forEach((clusterId, nodeId) => {
+    if (!clusterMembers.has(clusterId)) clusterMembers.set(clusterId, []);
+    clusterMembers.get(clusterId).push(nodeId);
+  });
+
+  const minSize = computeAdaptiveClusterThreshold(nodeCount);
+  const noiseNodes = new Set();
+  const validClusters = [];
+
+  clusterMembers.forEach((members, clusterId) => {
+    const hasInternalEdges = clusterHasInternalEdges(members, adjacency);
+    if (members.length <= 1 || members.length < minSize || !hasInternalEdges) {
+      members.forEach(nodeId => noiseNodes.add(nodeId));
+      return;
+    }
+    validClusters.push({ id: clusterId, members });
+  });
+
+  validClusters.sort((a, b) => b.members.length - a.members.length);
+
+  const remap = new Map();
+  let nextId = 1;
+  validClusters.forEach(cluster => {
+    remap.set(cluster.id, nextId++);
+  });
+
+  const finalAssignments = new Map();
+  assignments.forEach((clusterId, nodeId) => {
+    if (noiseNodes.has(nodeId)) {
+      finalAssignments.set(nodeId, 0);
+    } else {
+      finalAssignments.set(nodeId, remap.get(clusterId) || 0);
+    }
+  });
+
+  const nonNoiseCount = nextId - 1;
+  const noiseClusterId = noiseNodes.size > 0 ? 0 : null;
+
+  return {
+    communities: finalAssignments,
+    count: nonNoiseCount,
+    total: noiseClusterId === 0 ? nonNoiseCount + 1 : nonNoiseCount,
+    noiseClusterId,
+    minClusterSize: minSize,
+  };
+}
+
+function computeAdaptiveClusterThreshold(nodeCount) {
+  if (nodeCount <= 25) return 2;
+  if (nodeCount <= 75) return 3;
+  if (nodeCount <= 150) return 4;
+  if (nodeCount <= 300) return 5;
+  if (nodeCount <= 600) return 6;
+  if (nodeCount <= 1200) return 8;
+  if (nodeCount <= 2000) return 10;
+  return Math.max(12, Math.floor(nodeCount * 0.01));
+}
+
+function clusterHasInternalEdges(members, adjacency) {
+  if (!members || members.length === 0) return false;
+  const memberSet = new Set(members);
+  for (const nodeId of members) {
+    const neighbors = adjacency.get(nodeId);
+    if (!neighbors) continue;
+    for (const neighborId of neighbors.keys()) {
+      if (neighborId !== nodeId && memberSet.has(neighborId)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function shuffleArray(array) {
+  for (let i = array.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [array[i], array[j]] = [array[j], array[i]];
+  }
+  return array;
 }
 
 // =========================
@@ -2206,922 +2630,481 @@ class GPUNetworkRenderer {
 }
 
 // =========================
-// Layouts & drawing (GPU-accelerated)
+// Cosmograph integration
 // =========================
-function applyForceLayout() {
-  const centerX = canvas.width / 2, centerY = canvas.height / 2;
-  const maxRepulsionDist = 300; // Skip repulsion for distant nodes (optimization)
-
-  nodes.forEach(node => {
-    const nodeRadius = nodeSize(node);
-
-    nodes.forEach(other => {
-      if (node === other) return;
-      const dx = node.x - other.x, dy = node.y - other.y;
-      const distSq = dx*dx + dy*dy;
-
-      // Skip repulsion for very distant nodes (optimization)
-      if (distSq > maxRepulsionDist * maxRepulsionDist) return;
-
-      const dist = Math.sqrt(distSq) || 1;
-      const otherRadius = nodeSize(other);
-      const minDist = nodeRadius + otherRadius + 2; // Minimum distance to prevent overlap
-
-      // Strong collision force if nodes are overlapping or too close
-      if (dist < minDist) {
-        const collisionForce = (minDist - dist) * 0.5;
-        node.vx += (dx / dist) * collisionForce;
-        node.vy += (dy / dist) * collisionForce;
-      }
-
-      // Normal repulsion force
-      const force = Math.min(1000 / distSq, 10);
-      node.vx += (dx / dist) * force;
-      node.vy += (dy / dist) * force;
+function ensureCosmosGraph() {
+  if (!cosmosGraph) {
+    cosmosGraph = new Graph(graphContainer, {
+      backgroundColor: '#ffffff',
+      pointColor: '#9ca3af',
+      pointGreyoutOpacity: 0.12,
+      pointSize: 6,
+      linkColor: '#d1d5db',
+      linkGreyoutOpacity: 0.18,
+      linkWidth: 0.6,
+      enableSimulation: true,
+      enableDrag: true,
+      hoveredPointCursor: 'pointer',
+      simulation: {
+        gravity: 0.35,
+        center: 0.12,
+        repulsion: 1.25,
+        linkDistance: 18,
+        linkSpring: 1,
+        cluster: 0.32,
+      },
     });
-    graphData.links.forEach(link => {
-      // Use idToNode map for better performance (optimization)
-      const source = idToNode.get(link.source);
-      const target = idToNode.get(link.target);
-      if (!source || !target) return;
-      if (node === source) {
-        const dx = target.x - source.x, dy = target.y - source.y;
-        const dist = Math.sqrt(dx*dx + dy*dy) || 1;
-        const force = (dist - 150) * 0.05;
-        node.vx += (dx / dist) * force;
-        node.vy += (dy / dist) * force;
-      }
-    });
-    node.vx += (centerX - node.x) * 0.002;
-    node.vy += (centerY - node.y) * 0.002;
-    node.vx *= 0.85; node.vy *= 0.85;
-    node.x += node.vx; node.y += node.vy;
-    const margin = 30;
-    node.x = Math.max(margin, Math.min(canvas.width - margin, node.x));
-    node.y = Math.max(margin, Math.min(canvas.height - margin, node.y));
+  }
+
+  cosmosGraph.setConfig({
+    onPointMouseOver: handleCosmosPointOver,
+    onPointMouseOut: handleCosmosPointOut,
+    onPointClick: handleCosmosPointClick,
+    onMouseMove: handleCosmosMouseMove,
+    onClick: handleCosmosBackgroundClick,
+    onZoom: scheduleClusterLabelRefresh,
+    onSimulationTick: scheduleClusterLabelRefresh,
+  });
+
+  renderingIndicator.textContent = '\U0001f30c cosmos.gl';
+  renderingIndicator.style.color = '#6366f1';
+  return cosmosGraph;
+}
+
+let pendingClusterLabelUpdate = null;
+function scheduleClusterLabelRefresh() {
+  if (pendingClusterLabelUpdate) {
+    cancelAnimationFrame(pendingClusterLabelUpdate);
+  }
+  pendingClusterLabelUpdate = requestAnimationFrame(() => {
+    pendingClusterLabelUpdate = null;
+    updateClusterLabels();
   });
 }
 
 function initializeVisualization() {
   if (!graphData || graphData.nodes.length === 0) {
-    if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+    clusterLabelLayer.innerHTML = '';
+    cosmosClusterLabels = [];
+    if (cosmosGraph) {
+      cosmosGraph.setPointPositions(new Float32Array());
+      cosmosGraph.setLinks(new Float32Array());
+      cosmosGraph.render();
+    }
+    hideTooltip();
     return;
   }
 
-  // Reset zoom and pan transform when loading new network
-  transform = { x: 0, y: 0, scale: 1 };
-
-  // Clear node size statistics cache
   nodeSizeStats = null;
+  cosmosHoverIndex = null;
+  hoveredNode = null;
+  graphContainer.classList.remove('hovering');
+  clusterLabelLayer.innerHTML = '';
+  cosmosClusterLabels = [];
 
-  canvas.width = canvas.offsetWidth;
-  canvas.height = canvas.offsetHeight;
-
-  nodes = graphData.nodes.map(n => ({
-    ...n,
-    x: canvas.width/2 + (Math.random()-0.5)*100,
-    y: canvas.height/2 + (Math.random()-0.5)*100,
-    vx: 0, vy: 0
+  nodes = graphData.nodes.map((node, index) => ({
+    ...node,
+    index,
   }));
-
-  // Update global nodes reference for WebGL renderer
   window.nodes = nodes;
-  
-  // Rebuild idToNode map with positioned nodes (fix for highlight bug)
+
+  cosmosNodeIndex = new Map(nodes.map(n => [n.id, n.index]));
   idToNode = new Map(nodes.map(n => [n.id, n]));
+  currentClusterStats = computeClusterStats();
 
-  // CRITICAL FIX: Initialize GPU renderer FIRST, before any 2D context creation
-  // This prevents the "Canvas already has a 2D context" error
-  if (!gpuRenderer) {
-    console.log('Attempting GPU renderer initialization...');
-    gpuRenderer = new GPUNetworkRenderer(canvas);
-    
-    if (!gpuRenderer || !gpuRenderer.initialized) {
-      console.log('GPU renderer failed, will use CPU rendering');
-      gpuRenderer = null;
-      // Only create 2D context if WebGL failed
-      if (!ctx) {
-        if (!gl && !gpuRenderer) {
-          ctx = canvas.getContext('2d');
-          canvas.__ctxType = '2d';
-        }
-      }
-    }
-  }
+  const geometry = buildCosmosGeometry();
+  const graph = ensureCosmosGraph();
 
-  startAnimation();
+  graph.setPointPositions(geometry.pointPositions);
+  graph.setPointSizes(geometry.pointSizes);
+  graph.setPointColors(geometry.pointColors);
+  graph.setPointClusters(geometry.pointClusters);
+  graph.setLinks(geometry.links);
+  graph.setLinkColors(geometry.linkColors);
+  graph.setLinkWidths(geometry.linkWidths);
+  graph.render();
+
+  updateClusterLabels();
 }
 
-function startAnimation() {
-  if (animationFrame) cancelAnimationFrame(animationFrame);
-  let iteration = 0, maxIterations = 200;
-  function animate() {
-    if (iteration++ > maxIterations) return;
-    applyForceLayout(); drawNetwork();
-    animationFrame = requestAnimationFrame(animate);
-  }
-  animate();
-}
+function buildCosmosGeometry() {
+  const pointPositions = new Float32Array(nodes.length * 2);
+  const pointColors = new Float32Array(nodes.length * 4);
+  const pointSizes = new Float32Array(nodes.length);
+  const pointClusters = new Float32Array(nodes.length);
 
-function getNodeColor(node) {
-  if (node.suspicious) return '#dc2626';
-  if (communities && communities.communities.has(node.id)) {
-    const cid = communities.communities.get(node.id);
-    return communityColors[cid % communityColors.length];
-  }
-  if (node.type === 'user') return node.verified ? '#3b82f6' : '#8b5cf6';
-  if (node.type === 'location') return '#f59e0b'; // Orange for locations
-  return '#10b981'; // Green for hashtags
-}
+  nodes.forEach((node, index) => {
+    const angle = Math.random() * Math.PI * 2;
+    const radius = Math.random() * 10;
+    pointPositions[index * 2] = Math.cos(angle) * radius;
+    pointPositions[index * 2 + 1] = Math.sin(angle) * radius;
 
-// Cache for node size statistics (recalculated when nodes or sizing mode changes)
-let nodeSizeStats = null;
+    const [r, g, b, a] = hexToFloatColor(getNodeColor(node));
+    pointColors.set([r, g, b, a], index * 4);
 
-function calculateNodeSizeStats() {
-  if (!nodes || nodes.length === 0) return null;
+    pointSizes[index] = Math.max(4, nodeSize(node));
 
-  const sizeBy = nodeSizeBySelect?.value || 'degree';
-  const nodeValuePairs = [];
-
-  nodes.forEach(n => {
-    let value;
-    switch (sizeBy) {
-      case 'degree':
-        value = n.degree || 0;
-        break;
-      case 'followers':
-        value = n.type === 'user' ? (n.followers || 0) : (n.count || 0);
-        break;
-      default:
-        return; // uniform doesn't need stats
-    }
-    nodeValuePairs.push({ node: n, value });
+    const cid = communities?.communities?.get(node.id) ?? 0;
+    pointClusters[index] = cid;
   });
 
-  if (nodeValuePairs.length === 0) return null;
+  const linkPairs = [];
+  const linkColorValues = [];
+  const linkWidths = [];
 
-  // Sort by value
-  nodeValuePairs.sort((a, b) => a.value - b.value);
-
-  const values = nodeValuePairs.map(p => p.value);
-  const min = values[0];
-  const max = values[values.length - 1];
-  const range = max - min;
-
-  // Calculate percentiles for better distribution
-  const percentiles = {};
-  [10, 25, 50, 75, 90, 95, 99].forEach(p => {
-    const index = Math.floor((p / 100) * values.length);
-    percentiles[p] = values[Math.min(index, values.length - 1)];
-  });
-
-  // Build a map of node ID to percentile rank (0-1)
-  const percentileMap = new Map();
-  nodeValuePairs.forEach((pair, index) => {
-    const percentile = index / (nodeValuePairs.length - 1 || 1);
-    percentileMap.set(pair.node.id, percentile);
-  });
-
-  // Determine scaling method based on metric type
-  let method;
-  if (sizeBy === 'followers') {
-    // For followers, ALWAYS use logarithmic to properly spread the range
-    // This ensures 100k and 800k have a meaningful size difference
-    method = 'log';
-  } else if (sizeBy === 'degree') {
-    // For degree, check if we need special handling
-    const ratio = max / Math.max(min, 1);
-    if (ratio > 100) {
-      method = 'log'; // Very large range
-    } else if (range < 20) {
-      method = 'linear'; // Small range, linear is fine
-    } else {
-      method = 'sqrt'; // Medium range, square root
-    }
-  } else {
-    method = 'linear';
-  }
-
-  console.log(`📏 Node sizing (${sizeBy}): min=${min}, p50=${percentiles[50]}, p90=${percentiles[90]}, max=${max}, method=${method}`);
-
-  // Debug: Log some example sizes with expected visual sizes
-  if (nodeValuePairs.length > 0) {
-    const samples = [
-      { idx: 0, label: 'smallest' },
-      { idx: Math.floor(nodeValuePairs.length * 0.1), label: '10th percentile' },
-      { idx: Math.floor(nodeValuePairs.length * 0.5), label: 'median' },
-      { idx: Math.floor(nodeValuePairs.length * 0.9), label: '90th percentile' },
-      { idx: nodeValuePairs.length - 1, label: 'largest' }
-    ];
-    console.log(`Sample nodes (using ${method} scaling):`);
-
-    // Calculate expected sizes
-    samples.forEach(s => {
-      const pair = nodeValuePairs[s.idx];
-      const percentile = s.idx / (nodeValuePairs.length - 1 || 1);
-
-      // Calculate what the size will be
-      let normalized;
-      if (method === 'log') {
-        const logMin = Math.log10(min + 1);
-        const logMax = Math.log10(max + 1);
-        const logValue = Math.log10(pair.value + 1);
-        const logRange = logMax - logMin;
-        normalized = logRange > 0 ? (logValue - logMin) / logRange : 0;
-      } else if (method === 'linear') {
-        normalized = range > 0 ? (pair.value - min) / range : 0;
-      } else if (method === 'sqrt') {
-        const sqrtMin = Math.sqrt(min);
-        const sqrtMax = Math.sqrt(max);
-        const sqrtValue = Math.sqrt(pair.value);
-        const sqrtRange = sqrtMax - sqrtMin;
-        normalized = sqrtRange > 0 ? (sqrtValue - sqrtMin) / sqrtRange : 0;
-      }
-
-      const expectedSize = 4 + (normalized * 46); // minSize=4, maxSize=50
-
-      console.log(`  ${s.label}: value=${pair.value.toLocaleString()}, percentile=${percentile.toFixed(3)}, expected size=${expectedSize.toFixed(1)}px`);
-    });
-  }
-
-  return { min, max, range, method, percentiles, percentileMap };
-}
-
-function nodeSize(n) {
-  const sizeBy = nodeSizeBySelect.value;
-
-  // Uniform size - simple case
-  if (sizeBy === 'uniform') {
-    return 8;
-  }
-
-  // Get or calculate statistics for current sizing mode
-  if (!nodeSizeStats || nodeSizeStats.mode !== sizeBy) {
-    nodeSizeStats = calculateNodeSizeStats();
-    if (nodeSizeStats) {
-      nodeSizeStats.mode = sizeBy;
-    }
-  }
-
-  // Get the raw value for this node
-  let value;
-  switch (sizeBy) {
-    case 'degree':
-      value = n.degree || 0;
-      break;
-    case 'followers':
-      value = n.type === 'user' ? (n.followers || 0) : (n.count || 0);
-      break;
-    default:
-      return 8;
-  }
-
-  // If no stats or all values are the same, return default size
-  if (!nodeSizeStats || nodeSizeStats.range === 0) {
-    return 8;
-  }
-
-  const { min, max, range, method, percentileMap } = nodeSizeStats;
-
-  // Define min/max visual sizes with more dramatic range
-  const minSize = 4;
-  const maxSize = 50;
-  const sizeRange = maxSize - minSize;
-
-  // Apply scaling based on the chosen method
-  let normalized;
-
-  switch (method) {
-    case 'percentile':
-      // Percentile-based: uses rank position in sorted list
-      // This ensures even distribution across the full size range
-      normalized = percentileMap.get(n.id) || 0;
-      // Apply power curve to emphasize differences at the top
-      // Using 0.6 makes top nodes much larger relative to bottom nodes
-      normalized = Math.pow(normalized, 0.6);
-      break;
-
-    case 'sqrt':
-      // Square root scaling for medium ranges
-      const sqrtMin = Math.sqrt(min);
-      const sqrtMax = Math.sqrt(max);
-      const sqrtValue = Math.sqrt(value);
-      const sqrtRange = sqrtMax - sqrtMin;
-
-      if (sqrtRange > 0) {
-        normalized = (sqrtValue - sqrtMin) / sqrtRange;
-      } else {
-        normalized = 0;
-      }
-      break;
-
-    case 'log':
-      // Logarithmic scaling - properly spreads exponential distributions
-      const logMin = Math.log10(min + 1);
-      const logMax = Math.log10(max + 1);
-      const logValue = Math.log10(value + 1);
-      const logRange = logMax - logMin;
-
-      if (logRange > 0) {
-        normalized = (logValue - logMin) / logRange;
-      } else {
-        normalized = 0;
-      }
-
-      // Debug: Log specific examples
-      if (sizeBy === 'followers' && (value === 100000 || value === 800000 || Math.random() < 0.001)) {
-        console.log(`LOG sizing: value=${value.toLocaleString()}, logValue=${logValue.toFixed(2)}, normalized=${normalized.toFixed(3)}, size will be ${(minSize + normalized * sizeRange).toFixed(1)}px`);
-      }
-      break;
-
-    case 'linear':
-    default:
-      // Linear scaling
-      normalized = (value - min) / range;
-      break;
-  }
-
-  // Clamp to [0, 1]
-  normalized = Math.max(0, Math.min(1, normalized));
-
-  // Map to size range
-  const size = minSize + (normalized * sizeRange);
-
-  // Debug logging for specific nodes (log only occasionally to avoid spam)
-  if (Math.random() < 0.01 && sizeBy === 'followers') {
-    console.log(`Node size: value=${value}, normalized=${normalized.toFixed(3)}, size=${size.toFixed(1)}px, method=${method}`);
-  }
-
-  return Math.round(size * 10) / 10; // Round to 1 decimal place
-}
-
-function drawNetwork() {
-  // Clean up any existing overlays before redrawing
-  cleanupOverlays();
-  
-  // Try GPU rendering first, fallback to CPU if needed
-  if (gpuRenderer && gpuRenderer.initialized) {
-    const success = gpuRenderer.render(nodes, graphData.links, canvas.width, canvas.height, transform);
-    if (success) {
-      // Render arrows and labels using Canvas 2D overlays
-      gpuRenderer.renderArrows(graphData.links, canvas.width, canvas.height, transform);
-      gpuRenderer.renderLabels(nodes, canvas.width, canvas.height, transform);
-      updateRenderingIndicator(true);
-      return;
-    }
-  }
-  
-  // Fallback to CPU rendering
-  drawNetworkCPU();
-  updateRenderingIndicator(false);
-}
-
-function cleanupOverlays() {
-  // Remove any existing overlay canvases
-  const container = canvas.parentNode;
-  const overlays = container.querySelectorAll('.text-overlay, .arrow-overlay, .highlight-overlay, .search-highlight-overlay, .hover-overlay');
-  overlays.forEach(overlay => overlay.remove());
-}
-
-function updateRenderingIndicator(isGPU) {
-  if (isGPU) {
-    renderingIndicator.textContent = '🚀 GPU rendering';
-    renderingIndicator.style.color = '#10b981';
-  } else {
-    renderingIndicator.textContent = '⚙ CPU rendering';
-    renderingIndicator.style.color = '#f59e0b';
-  }
-}
-
-function drawNetworkCPU() {
-  // Create 2D context on demand if not already created
-  if (!ctx) {
-    if (!gl && !gpuRenderer) {
-      ctx = canvas.getContext('2d');
-      canvas.__ctxType = '2d';
-    }
-    if (!ctx) {
-      console.error('Failed to create 2D context');
-      return;
-    }
-  }
-
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-  // Apply zoom and pan transform
-  ctx.save();
-  ctx.translate(transform.x, transform.y);
-  ctx.scale(transform.scale, transform.scale);
-
-  // edges (use idToNode map instead of find for better performance)
   graphData.links.forEach(link => {
-    const s = idToNode.get(link.source);
-    const t = idToNode.get(link.target);
-    if (!s || !t) return;
-    const w = link.weight || 1;
-    ctx.lineWidth = Math.min(1 + w*0.5, 5);
-    ctx.strokeStyle = '#d1d5db';
-    ctx.globalAlpha = Math.min(0.3 + w*0.1, 0.8);
-    ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y); ctx.stroke();
-    
-    // Draw arrowhead to show direction
-    const angle = Math.atan2(t.y - s.y, t.x - s.x);
-    const targetRadius = nodeSize(t);
-    const arrowSize = Math.min(8, targetRadius * 0.6);
-    const arrowX = t.x - Math.cos(angle) * (targetRadius + 2);
-    const arrowY = t.y - Math.sin(angle) * (targetRadius + 2);
-    
-    ctx.fillStyle = '#d1d5db';
-    ctx.beginPath();
-    ctx.moveTo(arrowX, arrowY);
-    ctx.lineTo(
-      arrowX - arrowSize * Math.cos(angle - Math.PI / 6),
-      arrowY - arrowSize * Math.sin(angle - Math.PI / 6)
-    );
-    ctx.lineTo(
-      arrowX - arrowSize * Math.cos(angle + Math.PI / 6),
-      arrowY - arrowSize * Math.sin(angle + Math.PI / 6)
-    );
-    ctx.closePath();
-    ctx.fill();
-    
-    ctx.globalAlpha = 1;
+    const sourceIndex = cosmosNodeIndex.get(link.source);
+    const targetIndex = cosmosNodeIndex.get(link.target);
+    if (sourceIndex === undefined || targetIndex === undefined) return;
+
+    linkPairs.push(sourceIndex, targetIndex);
+
+    const weight = link.weight || 1;
+    const alpha = Math.min(0.15 + weight * 0.08, 0.55);
+    const [r, g, b, a] = hexToFloatColor('#d1d5db', alpha);
+    linkColorValues.push(r, g, b, a);
+    linkWidths.push(Math.max(0.4, Math.min(weight * 0.6, 2.5)));
   });
 
-  // nodes
-  nodes.forEach(n => {
-    const r = nodeSize(n);
-    ctx.fillStyle = getNodeColor(n);
-    ctx.beginPath(); ctx.arc(n.x, n.y, r, 0, Math.PI*2); ctx.fill();
-
-    if (r > 12 || n.suspicious) {
-      ctx.strokeStyle = n.suspicious ? '#7f1d1d' : 'white';
-      ctx.lineWidth = n.suspicious ? 3 : 2; ctx.stroke();
-    }
-
-    if (r > 8) {
-      ctx.fillStyle = '#1f2937';
-      ctx.font = `${Math.min(r*0.8, 12)}px sans-serif`;
-      ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-      const label = (n.label || '').substring(0, 20);
-      ctx.fillText(label, n.x, n.y - r - 5);
-    }
-  });
-
-  // Restore transform
-  ctx.restore();
-}
-
-// =========================
-// Hover & Click UX
-// =========================
-function getNodeAt(x, y) {
-  if (!nodes?.length) return null;
-  let best = null, bestDist = Infinity;
-  for (const n of nodes) {
-    const r = nodeSize(n);
-    const d = Math.hypot(x - n.x, y - n.y);
-    if (d <= r && d < bestDist) { best = n; bestDist = d; }
-  }
-  return best;
-}
-
-function buildAdjacency(graph) {
-  adjacency = new Map();
-  graph.nodes.forEach(n => adjacency.set(n.id, new Set()));
-  graph.links.forEach(l => {
-    if (adjacency.has(l.source)) adjacency.get(l.source).add(l.target);
-    if (adjacency.has(l.target)) adjacency.get(l.target).add(l.source);
-  });
-  graph.nodes.forEach(n => { n.degree = adjacency.get(n.id)?.size || 0; });
-}
-
-function postEngagement(p) {
-  const s = p?.data?.stats || {};
-  return (s.diggCount||0) + (s.commentCount||0) + (s.shareCount||0);
-}
-
-function getAllPostsForNode(node) {
-  if (!filteredData?.length) return [];
-  const out = [];
-  if (node.type === 'user') {
-    const wantId = (node.id + '').replace(/^u_/,'');
-    for (const p of filteredData) {
-      const a = p?.data?.author || {};
-      if (String(a.id) === wantId || (a.uniqueId && node.label && a.uniqueId.toLowerCase() === node.label.toLowerCase())) {
-        out.push(p);
-      }
-    }
-  } else if (node.type === 'hashtag') {
-    const wantId = (node.id + '').replace(/^h_/,'');
-    const wantLabel = (node.label || '').toLowerCase();
-    for (const p of filteredData) {
-      const hs = p?.data?.challenges || [];
-      if (hs.some(h => String(h.id) === wantId || (h.title && h.title.toLowerCase() === wantLabel))) out.push(p);
-    }
-  } else if (node.type === 'location') {
-    const wantId = (node.id + '').replace(/^loc_/,'');
-    const wantLabel = (node.label || '').toLowerCase();
-    for (const p of filteredData) {
-      const loc = p?.data?._instagram?.location;
-      if (loc && (String(loc.pk) === wantId || (loc.name && loc.name.toLowerCase() === wantLabel))) {
-        out.push(p);
-      }
-    }
-  }
-  out.sort((a,b)=>postEngagement(b)-postEngagement(a));
-  return out;
-}
-
-function samplePostsForNode(node, limit=5) {
-  return getAllPostsForNode(node).slice(0, limit);
-}
-
-function highlightNeighbors(node) {
-  const nbs = adjacency.get(node.id) || new Set();
-  
-  // For GPU rendering, we need to render the highlight effect
-  if (gpuRenderer && gpuRenderer.initialized) {
-    // Create highlight data for GPU rendering
-    const highlightNodes = [];
-    for (const id of nbs) {
-      const nb = idToNode.get(id); 
-      if (!nb) continue;
-      highlightNodes.push({
-        x: nb.x,
-        y: nb.y,
-        radius: nodeSize(nb) + 8,
-        color: [1.0, 0.96, 0.42], // #fde68a in RGB
-        alpha: 0.15
-      });
-    }
-    renderHighlightGlow(highlightNodes, node, nbs);
-  } else {
-    // Fallback to CPU rendering - highlight neighbor nodes
-  ctx.save();
-  // Apply zoom and pan transform
-  ctx.translate(transform.x, transform.y);
-  ctx.scale(transform.scale, transform.scale);
-  ctx.globalAlpha = 0.15; ctx.fillStyle = '#fde68a';
-  for (const id of nbs) {
-    const nb = idToNode.get(id); if (!nb) continue;
-    ctx.beginPath(); ctx.arc(nb.x, nb.y, nodeSize(nb)+8, 0, Math.PI*2); ctx.fill();
-  }
-  ctx.restore();
-
-    // Highlight connected edges
-    ctx.save();
-  // Apply zoom and pan transform
-  ctx.translate(transform.x, transform.y);
-  ctx.scale(transform.scale, transform.scale);
-    graphData.links.forEach(link => {
-      const isConnected = (link.source === node.id && nbs.has(link.target)) ||
-                         (link.target === node.id && nbs.has(link.source));
-      if (!isConnected) return;
-      
-      // Use idToNode map for better performance (optimization)
-      const s = idToNode.get(link.source);
-      const t = idToNode.get(link.target);
-      if (!s || !t) return;
-      
-      const w = link.weight || 1;
-      ctx.lineWidth = Math.min(2 + w*0.5, 6);
-      ctx.strokeStyle = '#fbbf24'; // Amber color for highlighted edges
-      ctx.globalAlpha = 0.8;
-      ctx.beginPath(); 
-      ctx.moveTo(s.x, s.y); 
-      ctx.lineTo(t.x, t.y); 
-      ctx.stroke();
-      
-      // Draw arrowhead on highlighted edge
-      const angle = Math.atan2(t.y - s.y, t.x - s.x);
-      const targetRadius = nodeSize(t);
-      const arrowSize = Math.min(10, targetRadius * 0.7);
-      const arrowX = t.x - Math.cos(angle) * (targetRadius + 2);
-      const arrowY = t.y - Math.sin(angle) * (targetRadius + 2);
-      
-      ctx.fillStyle = '#fbbf24';
-      ctx.beginPath();
-      ctx.moveTo(arrowX, arrowY);
-      ctx.lineTo(
-        arrowX - arrowSize * Math.cos(angle - Math.PI / 6),
-        arrowY - arrowSize * Math.sin(angle - Math.PI / 6)
-      );
-      ctx.lineTo(
-        arrowX - arrowSize * Math.cos(angle + Math.PI / 6),
-        arrowY - arrowSize * Math.sin(angle + Math.PI / 6)
-      );
-      ctx.closePath();
-      ctx.fill();
-    });
-    ctx.restore();
-  }
-}
-
-function renderHighlightGlow(highlightNodes, node, nbs) {
-  // CRITICAL FIX: Cannot create 2D context on canvas with WebGL context
-  // Create a temporary overlay canvas for highlight effects
-  const overlayCanvas = document.createElement('canvas');
-  overlayCanvas.width = canvas.width;
-  overlayCanvas.height = canvas.height;
-  overlayCanvas.style.position = 'absolute';
-  overlayCanvas.style.top = '0';
-  overlayCanvas.style.left = '0';
-  overlayCanvas.style.pointerEvents = 'none';
-  overlayCanvas.style.zIndex = '2';
-  
-  const tempCtx = overlayCanvas.getContext('2d');
-  
-  // Draw highlighted edges first (so they appear behind nodes)
-  if (node && nbs) {
-    tempCtx.save();
-    // Apply zoom and pan transform
-    tempCtx.translate(transform.x, transform.y);
-    tempCtx.scale(transform.scale, transform.scale);
-    graphData.links.forEach(link => {
-      const isConnected = (link.source === node.id && nbs.has(link.target)) ||
-                         (link.target === node.id && nbs.has(link.source));
-      if (!isConnected) return;
-      
-      // Use idToNode map for better performance (optimization)
-      const s = idToNode.get(link.source);
-      const t = idToNode.get(link.target);
-      if (!s || !t) return;
-      
-      const w = link.weight || 1;
-      tempCtx.lineWidth = Math.min(2 + w*0.5, 6);
-      tempCtx.strokeStyle = '#fbbf24'; // Amber color for highlighted edges
-      tempCtx.globalAlpha = 0.8;
-      tempCtx.beginPath(); 
-      tempCtx.moveTo(s.x, s.y); 
-      tempCtx.lineTo(t.x, t.y); 
-      tempCtx.stroke();
-      
-      // Draw arrowhead on highlighted edge
-      const angle = Math.atan2(t.y - s.y, t.x - s.x);
-      const targetRadius = nodeSize(t);
-      const arrowSize = Math.min(10, targetRadius * 0.7);
-      const arrowX = t.x - Math.cos(angle) * (targetRadius + 2);
-      const arrowY = t.y - Math.sin(angle) * (targetRadius + 2);
-      
-      tempCtx.fillStyle = '#fbbf24';
-      tempCtx.beginPath();
-      tempCtx.moveTo(arrowX, arrowY);
-      tempCtx.lineTo(
-        arrowX - arrowSize * Math.cos(angle - Math.PI / 6),
-        arrowY - arrowSize * Math.sin(angle - Math.PI / 6)
-      );
-      tempCtx.lineTo(
-        arrowX - arrowSize * Math.cos(angle + Math.PI / 6),
-        arrowY - arrowSize * Math.sin(angle + Math.PI / 6)
-      );
-      tempCtx.closePath();
-      tempCtx.fill();
-    });
-    tempCtx.restore();
-  }
-  
-  // Draw highlighted nodes
-  tempCtx.save();
-  // Apply zoom and pan transform
-  tempCtx.translate(transform.x, transform.y);
-  tempCtx.scale(transform.scale, transform.scale);
-  highlightNodes.forEach(node => {
-    tempCtx.globalAlpha = node.alpha;
-    tempCtx.fillStyle = `rgb(${Math.floor(node.color[0]*255)}, ${Math.floor(node.color[1]*255)}, ${Math.floor(node.color[2]*255)})`;
-    tempCtx.beginPath();
-    tempCtx.arc(node.x, node.y, node.radius, 0, Math.PI * 2);
-    tempCtx.fill();
-  });
-  tempCtx.restore();
-  
-  // Remove any existing highlight overlay
-  const existingHighlight = canvas.parentNode.querySelector('.highlight-overlay');
-  if (existingHighlight) {
-    existingHighlight.remove();
-  }
-  
-  // Add the highlight overlay
-  overlayCanvas.className = 'highlight-overlay';
-  canvas.parentNode.appendChild(overlayCanvas);
-}
-
-canvas.addEventListener('mousemove', (e) => {
-  if (!nodes?.length || isDragging) return;
-
-  const rect = canvas.getBoundingClientRect();
-  const screenX = e.clientX - rect.left;
-  const screenY = e.clientY - rect.top;
-
-  // Transform screen coordinates to canvas coordinates
-  const canvasPos = screenToCanvas(screenX, screenY);
-  const n = getNodeAt(canvasPos.x, canvasPos.y);
-  if (n) {
-    hoveredNode = n;
-    canvas.classList.add('hovering');
-
-    // tooltip content
-    const deg = n.degree ?? 0;
-    const label = n.label ?? n.id;
-    let prefix = '';
-    if (n.type === 'user') prefix = '@';
-    else if (n.type === 'hashtag') prefix = '#';
-    else if (n.type === 'location') prefix = '📍';
-    
-    const meta = (n.type==='user')
-      ? `${n.verified?'Verified · ':''}${(n.followers||0).toLocaleString()} followers`
-      : `${n.count||0} posts`;
-
-    tooltipEl.innerHTML =
-      `<div style="font-weight:600">${prefix}${label}</div>
-       <div style="opacity:.85">${n.type} · degree ${deg}${meta ? ' · ' + meta : ''}</div>`;
-    tooltipEl.style.display = 'block';
-
-    // Place tooltip near cursor, adjusting for viewport boundaries
-    const offset = 10; // Small offset from cursor
-    const pad = 8; // Padding from viewport edges
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-
-    // Temporarily position to measure size
-    tooltipEl.style.left = '0px';
-    tooltipEl.style.top = '0px';
-    const tb = tooltipEl.getBoundingClientRect();
-
-    // Calculate position, prefer right and below cursor
-    let tx = e.clientX + offset;
-    let ty = e.clientY + offset;
-
-    // Check if tooltip would go off right edge
-    if (tx + tb.width + pad > vw) {
-      // Position to the left of cursor instead
-      tx = e.clientX - tb.width - offset;
-      // If still off-screen, clamp to viewport
-      if (tx < pad) tx = pad;
-    }
-
-    // Check if tooltip would go off bottom edge
-    if (ty + tb.height + pad > vh) {
-      // Position above cursor instead
-      ty = e.clientY - tb.height - offset;
-      // If still off-screen, clamp to viewport
-      if (ty < pad) ty = pad;
-    }
-
-    tooltipEl.style.left = tx + 'px';
-    tooltipEl.style.top = ty + 'px';
-
-    // redraw with neighbor glow + ring
-    drawNetwork();
-    highlightNeighbors(n);
-    
-    // Draw hover ring using overlay to avoid context conflicts
-    const hoverCanvas = document.createElement('canvas');
-    hoverCanvas.width = canvas.width;
-    hoverCanvas.height = canvas.height;
-    hoverCanvas.style.position = 'absolute';
-    hoverCanvas.style.top = '0';
-    hoverCanvas.style.left = '0';
-    hoverCanvas.style.pointerEvents = 'none';
-    hoverCanvas.style.zIndex = '4';
-
-    const hoverCtx = hoverCanvas.getContext('2d');
-    hoverCtx.save();
-    // Apply zoom and pan transform
-    hoverCtx.translate(transform.x, transform.y);
-    hoverCtx.scale(transform.scale, transform.scale);
-    hoverCtx.strokeStyle = '#111827';
-    hoverCtx.lineWidth = 2;
-    hoverCtx.globalAlpha = 0.6;
-    hoverCtx.beginPath();
-    hoverCtx.arc(n.x, n.y, nodeSize(n)+4, 0, Math.PI*2);
-    hoverCtx.stroke();
-    hoverCtx.restore();
-    
-    // Remove any existing hover overlay
-    const existingHover = canvas.parentNode.querySelector('.hover-overlay');
-    if (existingHover) {
-      existingHover.remove();
-    }
-    
-    // Add the hover overlay
-    hoverCanvas.className = 'hover-overlay';
-    canvas.parentNode.appendChild(hoverCanvas);
-  } else {
-    hoveredNode = null;
-    canvas.classList.remove('hovering');
-    tooltipEl.style.display = 'none';
-    drawNetwork();
-  }
-});
-
-canvas.addEventListener('click', (e) => {
-  // Don't trigger click if we were dragging
-  if (isDragging) return;
-
-  const rect = canvas.getBoundingClientRect();
-  const screenX = e.clientX - rect.left;
-  const screenY = e.clientY - rect.top;
-
-  // Transform screen coordinates to canvas coordinates
-  const x = (screenX - transform.x) / transform.scale;
-  const y = (screenY - transform.y) / transform.scale;
-
-  let clicked = null, minDist = Infinity;
-  nodes.forEach(n => {
-    const r = nodeSize(n);
-    const d = Math.hypot(x - n.x, y - n.y);
-    if (d < r && d < minDist) { clicked = n; minDist = d; }
-  });
-
-  if (clicked) {
-    showNodeInfo(clicked);   // keep sidebar
-    openNodeModal(clicked);  // new rich modal
-  }
-});
-
-// =========================
-// Zoom and Pan Controls
-// =========================
-
-// Helper function to transform screen coordinates to canvas coordinates
-function screenToCanvas(screenX, screenY) {
   return {
-    x: (screenX - transform.x) / transform.scale,
-    y: (screenY - transform.y) / transform.scale
+    pointPositions,
+    pointColors,
+    pointSizes,
+    pointClusters,
+    links: new Float32Array(linkPairs),
+    linkColors: new Float32Array(linkColorValues),
+    linkWidths: new Float32Array(linkWidths),
   };
 }
 
-// Zoom with mouse wheel
-canvas.addEventListener('wheel', (e) => {
-  e.preventDefault();
+function refreshCosmosStyling({ updateClusters = true } = {}) {
+  if (!cosmosGraph || !nodes.length) return;
 
-  const rect = canvas.getBoundingClientRect();
-  const mouseX = e.clientX - rect.left;
-  const mouseY = e.clientY - rect.top;
+  const colors = new Float32Array(nodes.length * 4);
+  const sizes = new Float32Array(nodes.length);
+  const clusters = updateClusters ? new Float32Array(nodes.length) : null;
 
-  // Calculate zoom factor
-  const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
-  const newScale = Math.max(0.1, Math.min(10, transform.scale * zoomFactor));
+  nodes.forEach((node, index) => {
+    const [r, g, b, a] = hexToFloatColor(getNodeColor(node));
+    colors.set([r, g, b, a], index * 4);
+    sizes[index] = Math.max(4, nodeSize(node));
+    if (clusters) {
+      const cid = communities?.communities?.get(node.id) ?? 0;
+      clusters[index] = cid;
+    }
+  });
 
-  // Zoom towards mouse position
-  const canvasX = (mouseX - transform.x) / transform.scale;
-  const canvasY = (mouseY - transform.y) / transform.scale;
-
-  transform.scale = newScale;
-  transform.x = mouseX - canvasX * newScale;
-  transform.y = mouseY - canvasY * newScale;
-
-  drawNetwork();
-});
-
-// Pan with mouse drag
-canvas.addEventListener('mousedown', (e) => {
-  // Only start drag with left mouse button and not on a node
-  if (e.button !== 0) return;
-
-  const rect = canvas.getBoundingClientRect();
-  const screenX = e.clientX - rect.left;
-  const screenY = e.clientY - rect.top;
-  const canvasPos = screenToCanvas(screenX, screenY);
-
-  // Check if clicking on a node - if so, don't start panning
-  const nodeAtPos = getNodeAt(canvasPos.x, canvasPos.y);
-  if (nodeAtPos) return;
-
-  isDragging = true;
-  dragStart = { x: e.clientX - transform.x, y: e.clientY - transform.y };
-  canvas.style.cursor = 'grabbing';
-});
-
-canvas.addEventListener('mousemove', (e) => {
-  if (!isDragging) return;
-
-  transform.x = e.clientX - dragStart.x;
-  transform.y = e.clientY - dragStart.y;
-
-  drawNetwork();
-});
-
-canvas.addEventListener('mouseup', () => {
-  if (isDragging) {
-    isDragging = false;
-    canvas.style.cursor = 'default';
+  cosmosGraph.setPointColors(colors);
+  cosmosGraph.setPointSizes(sizes);
+  if (clusters) {
+    cosmosGraph.setPointClusters(clusters);
+    currentClusterStats = computeClusterStats();
+    updateClusterLabels();
   }
-});
+  cosmosGraph.render();
+}
 
-canvas.addEventListener('mouseleave', () => {
-  if (isDragging) {
-    isDragging = false;
-    canvas.style.cursor = 'default';
+function computeClusterStats() {
+  const stats = new Map();
+  if (!communities || !communities.communities) return stats;
+
+  const noiseId = communities.noiseClusterId;
+
+  nodes.forEach(node => {
+    const cid = communities.communities.get(node.id);
+    if (cid === undefined) return;
+    if (!stats.has(cid)) {
+      stats.set(cid, { size: 0, suspicious: 0, isNoise: cid === noiseId });
+    }
+    const entry = stats.get(cid);
+    entry.size += 1;
+    if (node.suspicious) entry.suspicious += 1;
+  });
+  return stats;
+}
+
+function hexToFloatColor(hex, alpha = 1) {
+  const normalized = hex.replace('#', '');
+  const bigint = parseInt(normalized, 16);
+  const r = (bigint >> 16) & 255;
+  const g = (bigint >> 8) & 255;
+  const b = bigint & 255;
+  return [r / 255, g / 255, b / 255, alpha];
+}
+
+function updateClusterLabels() {
+  if (!cosmosGraph || !communities || !communities.communities) {
+    clusterLabelLayer.innerHTML = '';
+    cosmosClusterLabels = [];
+    return;
   }
-});
+
+  const positions = cosmosGraph.getClusterPositions?.();
+  if (!positions || positions.length === 0) {
+    clusterLabelLayer.innerHTML = '';
+    cosmosClusterLabels = [];
+    return;
+  }
+
+  const clusterCount = positions.length / 2;
+  if (cosmosClusterLabels.length !== clusterCount) {
+    clusterLabelLayer.innerHTML = '';
+    cosmosClusterLabels = [];
+    for (let i = 0; i < clusterCount; i++) {
+      const label = document.createElement('div');
+      label.className = 'cosmos-cluster-label';
+      clusterLabelLayer.appendChild(label);
+      cosmosClusterLabels.push(label);
+    }
+  }
+
+  const noiseId = communities.noiseClusterId;
+
+  for (let i = 0; i < clusterCount; i++) {
+    const label = cosmosClusterLabels[i];
+    const stats = currentClusterStats.get(i);
+    if (!stats || stats.isNoise || i === noiseId) {
+      label.style.display = 'none';
+      continue;
+    }
+
+    label.style.display = 'block';
+    label.innerHTML = `Cluster ${i}<small>${stats.size} nodes${stats.suspicious ? ` · ${stats.suspicious} flagged` : ''}</small>`;
+
+    const color = communityColors[(i - 1 + communityColors.length) % communityColors.length];
+    label.style.background = `${color}1f`;
+    label.style.border = `1px solid ${color}`;
+    label.style.color = color;
+
+    const spaceX = positions[i * 2];
+    const spaceY = positions[i * 2 + 1];
+    if (spaceX == null || spaceY == null) {
+      label.style.display = 'none';
+      continue;
+    }
+
+    const [screenX, screenY] = cosmosGraph.spaceToScreenPosition([spaceX, spaceY]);
+    label.style.left = `${screenX}px`;
+    label.style.top = `${screenY}px`;
+  }
+}
+
+function handleCosmosPointOver(index, position, event) {
+  const node = nodes[index];
+  if (!node) return;
+  cosmosHoverIndex = index;
+  hoveredNode = node;
+  graphContainer.classList.add('hovering');
+  highlightNeighbors(node);
+  showTooltip(node, event);
+}
+
+function handleCosmosMouseMove(index, position, event) {
+  if (!hoveredNode) return;
+  moveTooltip(event);
+}
+
+function handleCosmosPointOut() {
+  cosmosHoverIndex = null;
+  hoveredNode = null;
+  graphContainer.classList.remove('hovering');
+  hideTooltip();
+  clearHighlight();
+}
+
+function handleCosmosPointClick(index) {
+  const node = nodes[index];
+  if (!node) return;
+  showNodeInfo(node);
+  openNodeModal(node);
+}
+
+function handleCosmosBackgroundClick() {
+  cosmosHoverIndex = null;
+  hoveredNode = null;
+  graphContainer.classList.remove('hovering');
+  hideTooltip();
+  clearHighlight();
+}
+
+function showTooltip(node, event) {
+  if (!tooltipEl || !event) return;
+  const deg = node.degree ?? 0;
+  const label = node.label ?? node.id;
+  let prefix = '';
+  if (node.type === 'user') prefix = '@';
+  else if (node.type === 'hashtag') prefix = '#';
+  else if (node.type === 'location') prefix = '📍';
+
+  const meta = node.type === 'user'
+    ? `${node.verified ? 'Verified · ' : ''}${(node.followers || 0).toLocaleString()} followers`
+    : `${node.count || 0} posts`;
+
+  tooltipEl.innerHTML = `<div style="font-weight:600">${prefix}${label}</div>` +
+    `<div style="opacity:.85">${node.type} · degree ${deg}${meta ? ' · ' + meta : ''}</div>`;
+  tooltipEl.style.display = 'block';
+  moveTooltip(event);
+}
+
+function moveTooltip(event) {
+  if (!tooltipEl || !event) return;
+  const offset = 10;
+  const pad = 8;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+
+  tooltipEl.style.left = '0px';
+  tooltipEl.style.top = '0px';
+  const tb = tooltipEl.getBoundingClientRect();
+
+  let tx = event.clientX + offset;
+  let ty = event.clientY + offset;
+
+  if (tx + tb.width + pad > vw) {
+    tx = event.clientX - tb.width - offset;
+    if (tx < pad) tx = pad;
+  }
+
+  if (ty + tb.height + pad > vh) {
+    ty = event.clientY - tb.height - offset;
+    if (ty < pad) ty = pad;
+  }
+
+  tooltipEl.style.left = `${tx}px`;
+  tooltipEl.style.top = `${ty}px`;
+}
+
+function hideTooltip() {
+  if (!tooltipEl) return;
+  tooltipEl.style.display = 'none';
+}
+
+function highlightNeighbors(node) {
+  if (!cosmosGraph || !node) return;
+  const index = cosmosNodeIndex.get(node.id);
+  if (index === undefined) return;
+
+  cosmosGraph.selectPointByIndex(index, true);
+}
+
+function clearHighlight() {
+  cosmosGraph?.unselectPoints();
+}
+
+// Helper function to render a single post HTML
+function postEngagement(post) {
+  const stats = post?.data?.stats || post?.stats || {};
+  const instagramStats = post?.data?._instagram?.insights || post?.data?._instagram || {};
+
+  const fields = [
+    'diggCount', 'commentCount', 'shareCount', 'playCount', 'forwardCount', 'collectCount', 'favoriteCount',
+    'likeCount', 'viewCount', 'share_count', 'comment_count', 'like_count', 'play_count', 'favorite_count',
+    'saveCount', 'play', 'likes', 'comments', 'shares', 'views'
+  ];
+
+  let total = 0;
+  fields.forEach(key => { total += Number(stats[key] ?? instagramStats[key] ?? 0) || 0; });
+  return total;
+}
+
+function normalizeUserIdentifier(value) {
+  if (value === undefined || value === null) return null;
+  return String(value).toLowerCase().replace(/^user_/, '').replace(/^u_/, '').replace(/^@/, '');
+}
+
+function postMatchesNode(post, node) {
+  if (!post || !node) return false;
+  const type = node.type || 'user';
+  const nodeId = String(node.id ?? '').toLowerCase();
+  const normalizedNodeId = normalizeUserIdentifier(node.id);
+  const nodeLabel = node.label ? String(node.label).toLowerCase().replace(/^@/, '') : null;
+
+  if (type === 'user') {
+    const author = post?.data?.author || post?.author || {};
+    const authorId = author.id != null ? String(author.id).toLowerCase() : null;
+    const authorHandle = author.uniqueId ? String(author.uniqueId).toLowerCase() : null;
+    const normalizedAuthorId = normalizeUserIdentifier(author.id);
+
+    if (authorId && authorId === nodeId) return true;
+    if (normalizedNodeId && normalizedAuthorId && normalizedNodeId === normalizedAuthorId) return true;
+    if (nodeLabel && authorHandle && nodeLabel === authorHandle) return true;
+
+    const mentions = post?.data?.textExtra?.filter(m => m.type === 0) || [];
+    return mentions.some(m => {
+      const mentionId = m.userId != null ? String(m.userId).toLowerCase() : null;
+      const normalizedMentionId = normalizeUserIdentifier(m.userId || (m.userUniqueId ? `user_${m.userUniqueId}` : null));
+      const mentionHandle = m.userUniqueId ? String(m.userUniqueId).toLowerCase() : null;
+
+      if (mentionId && mentionId === nodeId) return true;
+      if (normalizedNodeId && normalizedMentionId && normalizedNodeId === normalizedMentionId) return true;
+      if (nodeLabel && mentionHandle && nodeLabel === mentionHandle) return true;
+      return false;
+    });
+  }
+
+  if (type === 'hashtag') {
+    const title = nodeLabel;
+    const challenges = post?.data?.challenges || [];
+    return challenges.some(tag => {
+      const tagId = tag?.id != null ? String(tag.id).toLowerCase() : null;
+      const tagTitle = tag?.title ? String(tag.title).toLowerCase() : null;
+      if (tagId && tagId === nodeId) return true;
+      if (title && tagTitle && title === tagTitle) return true;
+      return false;
+    });
+  }
+
+  if (type === 'location') {
+    const location = post?.data?._instagram?.location || post?.data?.location || {};
+    if (!location) return false;
+    const locationId = location.id != null ? String(location.id).toLowerCase() : null;
+    const locationName = location.name ? String(location.name).toLowerCase() : null;
+    if (locationId && locationId === nodeId) return true;
+    if (nodeLabel && locationName && nodeLabel === locationName) return true;
+    return false;
+  }
+
+  if (type === 'sound' || type === 'music') {
+    const music = post?.data?.music || {};
+    const musicId = music?.id != null ? String(music.id).toLowerCase() : null;
+    const musicTitle = music?.title ? String(music.title).toLowerCase() : null;
+    if (musicId && musicId === nodeId) return true;
+    if (nodeLabel && musicTitle && nodeLabel === musicTitle) return true;
+    return false;
+  }
+
+  // Generic fallback: try matching by ID or label string inclusion
+  const combined = JSON.stringify(post).toLowerCase();
+  if (nodeId && combined.includes(nodeId)) return true;
+  if (nodeLabel && combined.includes(nodeLabel)) return true;
+  return false;
+}
+
+function gatherPostsForNode(node) {
+  if (!node) return [];
+  const dataset = Array.isArray(filteredData) && filteredData.length ? filteredData : rawData;
+  if (!Array.isArray(dataset) || dataset.length === 0) return [];
+  return dataset.filter(post => postMatchesNode(post, node));
+}
+
+function samplePostsForNode(node, limit = 6) {
+  const matches = gatherPostsForNode(node);
+  if (matches.length <= limit) return matches;
+  return [...matches]
+    .sort((a, b) => postEngagement(b) - postEngagement(a))
+    .slice(0, limit);
+}
+
+function getAllPostsForNode(node) {
+  const matches = gatherPostsForNode(node);
+  return [...matches].sort((a, b) => postEngagement(b) - postEngagement(a));
+}
 
 // Helper function to render a single post HTML
 function renderPostHTML(p) {
   const a = p?.data?.author || {};
   const platform = p.platform || 'unknown';
-  
+
   // Platform-specific URLs and icons
   let profileUrl, postUrl, platformIcon;
   if (platform === 'instagram') {
@@ -3440,7 +3423,9 @@ function showNodeInfo(node) {
   }
   if (communities && communities.communities.has(node.id)) {
     const cid = communities.communities.get(node.id);
-    html += `<div class="info-row"><span class="info-label">Community:</span> <span class="info-value">#${cid + 1}</span></div>`;
+    const isNoise = cid === communities.noiseClusterId;
+    const clusterLabel = isNoise ? 'Noise' : `#${cid}`;
+    html += `<div class="info-row"><span class="info-label">Community:</span> <span class="info-value">${clusterLabel}</span></div>`;
   }
   if (node.verified) html += `<div class="info-row" style="color:#2563eb; font-weight: 600;">✓ Verified</div>`;
   nodeDetails.innerHTML = html;
@@ -3482,7 +3467,7 @@ detectBtn.addEventListener('click', () => {
   setTimeout(() => {
     communities = detectCommunities(graphData);
     if (communities && statElements.communities) statElements.communities.textContent = communities.count;
-    drawNetwork();
+    refreshCosmosStyling();
     loading.classList.remove('active');
     updateCoach();
   }, 100);
@@ -3495,7 +3480,7 @@ networkTypeSelect.addEventListener('change', updateNetwork);
 nodeSizeBySelect.addEventListener('change', () => {
   // Clear cached stats when sizing mode changes
   nodeSizeStats = null;
-  if (nodes.length > 0) drawNetwork();
+  if (nodes.length > 0) refreshCosmosStyling({ updateClusters: false });
 });
 engagementFilter.addEventListener('input', (e) => {
   const value = e.target.value; engagementValue.textContent = `${value}+ interactions`;
@@ -3509,7 +3494,12 @@ exportBtn.addEventListener('click', () => {
   const exportData = {
     ...graphData,
     metrics: networkMetrics,
-    communities: communities ? { count: communities.count, assignments: Array.from(communities.communities.entries()) } : null,
+    communities: communities ? {
+      count: communities.count,
+      noiseClusterId: communities.noiseClusterId,
+      minClusterSize: communities.minClusterSize,
+      assignments: Array.from(communities.communities.entries())
+    } : null,
     cibDetection: cibDetection ? {
       suspiciousUsers: Array.from(cibDetection.suspiciousUsers),
       indicators: cibDetection.indicators,
@@ -3948,84 +3938,48 @@ exportReportBtn.addEventListener('click', () => {
 
 if (searchInput) {
   searchInput.addEventListener('input', (e) => {
-    const term = e.target.value.toLowerCase();
+    const term = e.target.value.trim().toLowerCase();
     if (!term || !nodes.length) {
-      // Clear any existing highlights
-      const existingSearchHighlight = canvas?.parentNode?.querySelector('.search-highlight-overlay');
-      if (existingSearchHighlight) {
-        existingSearchHighlight.remove();
-      }
-      drawNetwork();
+      cosmosGraph?.unselectPoints();
+      graphContainer.classList.remove('hovering');
+      hideTooltip();
       return;
     }
 
-    drawNetwork();
-    const matches = nodes.filter(n => (n.label || '').toLowerCase().includes(term));
+    const matches = nodes
+      .filter(n => (n.label || '').toLowerCase().includes(term) || String(n.id).toLowerCase().includes(term))
+      .map(n => cosmosNodeIndex.get(n.id))
+      .filter(index => index !== undefined);
 
     console.log(`Search: Found ${matches.length} nodes matching "${term}"`);
 
-    // Draw search highlights using overlay canvas to avoid context conflicts
-    const highlightCanvas = document.createElement('canvas');
-    highlightCanvas.width = canvas.width;
-    highlightCanvas.height = canvas.height;
-    highlightCanvas.style.position = 'absolute';
-    highlightCanvas.style.top = '0';
-    highlightCanvas.style.left = '0';
-    highlightCanvas.style.pointerEvents = 'none';
-    highlightCanvas.style.zIndex = '3';
-
-    const highlightCtx = highlightCanvas.getContext('2d');
-    highlightCtx.save();
-    // Apply zoom and pan transform
-    highlightCtx.translate(transform.x, transform.y);
-    highlightCtx.scale(transform.scale, transform.scale);
-    highlightCtx.strokeStyle = '#ef4444';
-    highlightCtx.lineWidth = 3;
-    matches.forEach(n => {
-      const r = nodeSize(n);
-      highlightCtx.beginPath();
-      highlightCtx.arc(n.x, n.y, r+3, 0, Math.PI*2);
-      highlightCtx.stroke();
-    });
-    highlightCtx.restore();
-
-    // Remove any existing search highlight overlay
-    const existingSearchHighlight = canvas.parentNode.querySelector('.search-highlight-overlay');
-    if (existingSearchHighlight) {
-      existingSearchHighlight.remove();
+    if (!matches.length) {
+      cosmosGraph?.unselectPoints();
+      return;
     }
 
-    // Add the search highlight overlay
-    highlightCanvas.className = 'search-highlight-overlay';
-    canvas.parentNode.appendChild(highlightCanvas);
+    cosmosGraph.selectPointsByIndices(matches);
+    cosmosGraph.fitViewByPointIndices(matches, 400, 0.2);
+
+    const firstIndex = matches[0];
+    const firstNode = nodes[firstIndex];
+    if (firstNode) {
+      hoveredNode = firstNode;
+      cosmosHoverIndex = firstIndex;
+      graphContainer.classList.add('hovering');
+      showNodeInfo(firstNode);
+    }
   });
-} else {
+}
+ else {
   console.error('Search input element not found! Check if #search-input exists in HTML.');
 }
 
 // OPTIMIZED: Only resize canvas, don't reinitialize everything
 function resizeCanvas() {
-  if (!canvas || !nodes || nodes.length === 0) return;
-
-  const oldWidth = canvas.width;
-  const oldHeight = canvas.height;
-
-  canvas.width = canvas.offsetWidth;
-  canvas.height = canvas.offsetHeight;
-
-  // Scale existing node positions proportionally instead of reinitializing
-  if (oldWidth > 0 && oldHeight > 0) {
-    const scaleX = canvas.width / oldWidth;
-    const scaleY = canvas.height / oldHeight;
-
-    nodes.forEach(node => {
-      node.x *= scaleX;
-      node.y *= scaleY;
-    });
-  }
-
-  // Just redraw with existing positions
-  drawNetwork();
+  if (!cosmosGraph) return;
+  cosmosGraph.render();
+  updateClusterLabels();
 }
 
 let resizeTimeout;
