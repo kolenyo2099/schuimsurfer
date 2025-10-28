@@ -51,6 +51,35 @@ let idToNode = new Map();     // node.id -> node (with x,y)
 let adjacency = new Map();    // node.id -> Set(neighborIds)
 let hoveredNode = null;
 
+function buildAdjacency(network) {
+  adjacency = new Map();
+  if (!network || !Array.isArray(network.nodes)) return;
+
+  const ensureEntry = (id) => {
+    if (id === undefined || id === null) return null;
+    const key = id;
+    if (!adjacency.has(key)) {
+      adjacency.set(key, new Set());
+    }
+    return key;
+  };
+
+  network.nodes.forEach(node => {
+    ensureEntry(node?.id);
+  });
+
+  if (!Array.isArray(network.links)) return;
+
+  network.links.forEach(link => {
+    const sourceId = ensureEntry(link?.source?.id ?? link?.source);
+    const targetId = ensureEntry(link?.target?.id ?? link?.target);
+    if (sourceId === null || targetId === null || sourceId === targetId) return;
+
+    adjacency.get(sourceId)?.add(targetId);
+    adjacency.get(targetId)?.add(sourceId);
+  });
+}
+
 // =========================
 // DOM elements
 // =========================
