@@ -161,12 +161,14 @@ const thresholdLabels = {
 };
 
 const NODE_TYPE_COLORS = {
-  user: '#2563eb',
-  hashtag: '#f97316',
-  location: '#8b5cf6',
+  userVerified: '#2563eb',
+  userUnverified: '#8b5cf6',
+  hashtag: '#10b981',
+  location: '#f59e0b',
   sound: '#6366f1',
   music: '#6366f1',
   default: '#6b7280',
+  noise: '#d1d5db',
 };
 
 const NODE_SIZE_MIN = 6;
@@ -180,9 +182,16 @@ function getNodeColor(node) {
     return '#b91c1c';
   }
 
-  const communityId = communities?.communities?.get(node.id);
-  if (typeof communityId === 'number') {
-    return communityColors[communityId % communityColors.length] || communityColors[0];
+  const noiseId = communities?.noiseClusterId;
+  if (typeof noiseId === 'number') {
+    const cid = communities?.communities?.get(node.id);
+    if (cid === noiseId) {
+      return NODE_TYPE_COLORS.noise;
+    }
+  }
+
+  if (node.type === 'user') {
+    return node.verified ? NODE_TYPE_COLORS.userVerified : NODE_TYPE_COLORS.userUnverified;
   }
 
   const typeColor = NODE_TYPE_COLORS[node.type];
@@ -1528,42 +1537,307 @@ function displayMetrics(metrics) {
 }
 
 function detectCommunities(graph) {
-  if (graph.nodes.length === 0 || graph.links.length === 0) return null;
+  if (!graph || graph.nodes.length === 0) return null;
 
-  // Use cache for community detection (expensive operation)
   return communityDetectionCache.get(graph, {}, () => {
     perfMonitor.start('communityDetection');
 
-    const adj = new Map();
-    graph.nodes.forEach(n => adj.set(n.id, new Set()));
-    graph.links.forEach(l => { adj.get(l.source).add(l.target); adj.get(l.target).add(l.source); });
-
-    const labels = new Map();
-    graph.nodes.forEach((n,i)=>labels.set(n.id, i));
-
-    let changed = true, iterations = 0;
-    const maxIterations = 100;
-
-    while (changed && iterations < maxIterations) {
-      changed = false; iterations++;
-      const shuffled = [...graph.nodes].sort(() => Math.random()-0.5);
-      shuffled.forEach(node => {
-        const neighbors = adj.get(node.id); if (neighbors.size===0) return;
-        const counts = new Map();
-        neighbors.forEach(nb => { const lab = labels.get(nb); counts.set(lab, (counts.get(lab)||0)+1); });
-        let best = labels.get(node.id), bestCount = 0;
-        counts.forEach((c,lab)=>{ if (c>bestCount){ bestCount=c; best=lab; } });
-        if (best !== labels.get(node.id)) { labels.set(node.id, best); changed = true; }
-      });
-    }
-    const uniq = [...new Set(labels.values())];
-    const remap = new Map(); uniq.forEach((lab,i)=>remap.set(lab,i));
-    const out = new Map(); labels.forEach((lab,id)=>out.set(id, remap.get(lab)));
+    const result = runLouvainCommunityDetection(graph);
 
     perfMonitor.end('communityDetection');
 
-    return { communities: out, count: uniq.length };
+    return result;
   });
+}
+
+function runLouvainCommunityDetection(graph) {
+  const baseState = createLouvainState(
+    graph.nodes.map(n => n.id),
+    graph.links.map(link => ({
+      source: link.source.id ?? link.source,
+      target: link.target.id ?? link.target,
+      weight: link.weight || 1,
+    }))
+  );
+
+  if (baseState.totalWeight === 0) {
+    // No edges – collapse everything into a noise cluster
+    const assignments = new Map();
+    baseState.nodeIds.forEach(id => assignments.set(id, 0));
+    return finalizeLouvainClusters(assignments, baseState.adjacency, baseState.nodeIds.length);
+  }
+
+  const levelAssignments = [];
+  let currentState = baseState;
+  let keepIterating = true;
+  let safety = 0;
+
+  while (keepIterating && safety < 10) {
+    const { assignment, moved } = executeLouvainPhase(currentState);
+    levelAssignments.push(assignment);
+    keepIterating = moved;
+    safety += 1;
+
+    if (!moved) {
+      break;
+    }
+
+    currentState = aggregateLouvainGraph(currentState, assignment);
+    if (currentState.nodeIds.length <= 1) {
+      break;
+    }
+  }
+
+  const flattenedAssignments = new Map();
+  baseState.nodeIds.forEach(nodeId => {
+    let community = levelAssignments[0]?.get(nodeId) ?? 0;
+    for (let level = 1; level < levelAssignments.length; level++) {
+      const map = levelAssignments[level];
+      community = map.get(community) ?? community;
+    }
+    flattenedAssignments.set(nodeId, community ?? 0);
+  });
+
+  return finalizeLouvainClusters(flattenedAssignments, baseState.adjacency, baseState.nodeIds.length);
+}
+
+function createLouvainState(nodeIds, links) {
+  const adjacency = new Map();
+  const degrees = new Map();
+  const edges = [];
+
+  nodeIds.forEach(id => {
+    if (!adjacency.has(id)) adjacency.set(id, new Map());
+    if (!degrees.has(id)) degrees.set(id, 0);
+  });
+
+  let totalWeight = 0;
+
+  links.forEach(({ source, target, weight }) => {
+    if (source === undefined || target === undefined) return;
+    const s = source;
+    const t = target;
+    const w = Number.isFinite(weight) ? weight : 1;
+
+    if (!adjacency.has(s)) adjacency.set(s, new Map());
+    if (!adjacency.has(t)) adjacency.set(t, new Map());
+    if (!degrees.has(s)) degrees.set(s, 0);
+    if (!degrees.has(t)) degrees.set(t, 0);
+
+    if (s === t) {
+      const current = adjacency.get(s).get(t) || 0;
+      adjacency.get(s).set(t, current + w);
+      degrees.set(s, (degrees.get(s) || 0) + w * 2);
+    } else {
+      const mapS = adjacency.get(s);
+      const mapT = adjacency.get(t);
+      mapS.set(t, (mapS.get(t) || 0) + w);
+      mapT.set(s, (mapT.get(s) || 0) + w);
+      degrees.set(s, (degrees.get(s) || 0) + w);
+      degrees.set(t, (degrees.get(t) || 0) + w);
+    }
+
+    edges.push({ source: s, target: t, weight: w });
+    totalWeight += w;
+  });
+
+  return {
+    nodeIds: [...nodeIds],
+    adjacency,
+    degrees,
+    totalWeight,
+    links: edges,
+  };
+}
+
+function executeLouvainPhase(state) {
+  const { nodeIds, adjacency, degrees, totalWeight } = state;
+  const nodeCommunities = new Map();
+  const communityDegree = new Map();
+
+  nodeIds.forEach(id => {
+    nodeCommunities.set(id, id);
+    const deg = degrees.get(id) || 0;
+    communityDegree.set(id, deg);
+  });
+
+  let moved = false;
+  let improvement = true;
+  const order = [...nodeIds];
+
+  while (improvement) {
+    improvement = false;
+    shuffleArray(order);
+
+    order.forEach(nodeId => {
+      const nodeDegree = degrees.get(nodeId) || 0;
+      const currentCommunity = nodeCommunities.get(nodeId);
+
+      const neighborWeights = adjacency.get(nodeId) || new Map();
+      const neighborCommunities = new Map();
+
+      neighborWeights.forEach((weight, neighborId) => {
+        if (neighborId === nodeId) return;
+        const neighborCommunity = nodeCommunities.get(neighborId);
+        neighborCommunities.set(
+          neighborCommunity,
+          (neighborCommunities.get(neighborCommunity) || 0) + weight
+        );
+      });
+
+      const currentCommunityAfterRemoval = (communityDegree.get(currentCommunity) || 0) - nodeDegree;
+      communityDegree.set(currentCommunity, currentCommunityAfterRemoval);
+
+      let bestCommunity = currentCommunity;
+      let bestGain = neighborCommunities.get(currentCommunity) || 0;
+      bestGain -= (currentCommunityAfterRemoval * nodeDegree) / (2 * totalWeight);
+
+      neighborCommunities.forEach((weightToCommunity, communityId) => {
+        const sumTot = communityDegree.get(communityId) || 0;
+        const gain = weightToCommunity - (sumTot * nodeDegree) / (2 * totalWeight);
+        if (gain > bestGain + 1e-9) {
+          bestGain = gain;
+          bestCommunity = communityId;
+        }
+      });
+
+      communityDegree.set(bestCommunity, (communityDegree.get(bestCommunity) || 0) + nodeDegree);
+      nodeCommunities.set(nodeId, bestCommunity);
+
+      if (bestCommunity !== currentCommunity) {
+        moved = true;
+        improvement = true;
+      }
+    });
+  }
+
+  const remappedCommunities = new Map();
+  let index = 0;
+  nodeCommunities.forEach(comm => {
+    if (!remappedCommunities.has(comm)) {
+      remappedCommunities.set(comm, index++);
+    }
+  });
+
+  const assignment = new Map();
+  nodeCommunities.forEach((comm, nodeId) => {
+    assignment.set(nodeId, remappedCommunities.get(comm));
+  });
+
+  return { assignment, moved };
+}
+
+function aggregateLouvainGraph(state, assignment) {
+  const communityNodes = new Map();
+  assignment.forEach((community, nodeId) => {
+    if (!communityNodes.has(community)) communityNodes.set(community, []);
+    communityNodes.get(community).push(nodeId);
+  });
+
+  const newNodeIds = [...communityNodes.keys()];
+  const aggregatedWeights = new Map();
+
+  state.links.forEach(({ source, target, weight }) => {
+    const sourceCommunity = assignment.get(source);
+    const targetCommunity = assignment.get(target);
+    if (sourceCommunity === undefined || targetCommunity === undefined) return;
+
+    const key = sourceCommunity <= targetCommunity
+      ? `${sourceCommunity}|${targetCommunity}`
+      : `${targetCommunity}|${sourceCommunity}`;
+    aggregatedWeights.set(key, (aggregatedWeights.get(key) || 0) + weight);
+  });
+
+  const newLinks = [];
+  aggregatedWeights.forEach((weight, key) => {
+    const [a, b] = key.split('|').map(val => (Number.isNaN(Number(val)) ? val : Number(val)));
+    newLinks.push({ source: a, target: b, weight });
+  });
+
+  return createLouvainState(newNodeIds, newLinks);
+}
+
+function finalizeLouvainClusters(assignments, adjacency, nodeCount) {
+  const clusterMembers = new Map();
+  assignments.forEach((clusterId, nodeId) => {
+    if (!clusterMembers.has(clusterId)) clusterMembers.set(clusterId, []);
+    clusterMembers.get(clusterId).push(nodeId);
+  });
+
+  const minSize = computeAdaptiveClusterThreshold(nodeCount);
+  const noiseNodes = new Set();
+  const validClusters = [];
+
+  clusterMembers.forEach((members, clusterId) => {
+    const hasInternalEdges = clusterHasInternalEdges(members, adjacency);
+    if (members.length <= 1 || members.length < minSize || !hasInternalEdges) {
+      members.forEach(nodeId => noiseNodes.add(nodeId));
+      return;
+    }
+    validClusters.push({ id: clusterId, members });
+  });
+
+  validClusters.sort((a, b) => b.members.length - a.members.length);
+
+  const remap = new Map();
+  let nextId = 1;
+  validClusters.forEach(cluster => {
+    remap.set(cluster.id, nextId++);
+  });
+
+  const finalAssignments = new Map();
+  assignments.forEach((clusterId, nodeId) => {
+    if (noiseNodes.has(nodeId)) {
+      finalAssignments.set(nodeId, 0);
+    } else {
+      finalAssignments.set(nodeId, remap.get(clusterId) || 0);
+    }
+  });
+
+  const nonNoiseCount = nextId - 1;
+  const noiseClusterId = noiseNodes.size > 0 ? 0 : null;
+
+  return {
+    communities: finalAssignments,
+    count: nonNoiseCount,
+    total: noiseClusterId === 0 ? nonNoiseCount + 1 : nonNoiseCount,
+    noiseClusterId,
+    minClusterSize: minSize,
+  };
+}
+
+function computeAdaptiveClusterThreshold(nodeCount) {
+  if (nodeCount <= 25) return 2;
+  if (nodeCount <= 75) return 3;
+  if (nodeCount <= 150) return 4;
+  if (nodeCount <= 300) return 5;
+  if (nodeCount <= 600) return 6;
+  if (nodeCount <= 1200) return 8;
+  if (nodeCount <= 2000) return 10;
+  return Math.max(12, Math.floor(nodeCount * 0.01));
+}
+
+function clusterHasInternalEdges(members, adjacency) {
+  if (!members || members.length === 0) return false;
+  const memberSet = new Set(members);
+  for (const nodeId of members) {
+    const neighbors = adjacency.get(nodeId);
+    if (!neighbors) continue;
+    for (const neighborId of neighbors.keys()) {
+      if (neighborId !== nodeId && memberSet.has(neighborId)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function shuffleArray(array) {
+  for (let i = array.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [array[i], array[j]] = [array[j], array[i]];
+  }
+  return array;
 }
 
 // =========================
@@ -2532,10 +2806,15 @@ function refreshCosmosStyling({ updateClusters = true } = {}) {
 
 function computeClusterStats() {
   const stats = new Map();
+  if (!communities || !communities.communities) return stats;
+
+  const noiseId = communities.noiseClusterId;
+
   nodes.forEach(node => {
-    const cid = communities?.communities?.get(node.id) ?? 0;
+    const cid = communities.communities.get(node.id);
+    if (cid === undefined) return;
     if (!stats.has(cid)) {
-      stats.set(cid, { size: 0, suspicious: 0 });
+      stats.set(cid, { size: 0, suspicious: 0, isNoise: cid === noiseId });
     }
     const entry = stats.get(cid);
     entry.size += 1;
@@ -2554,7 +2833,7 @@ function hexToFloatColor(hex, alpha = 1) {
 }
 
 function updateClusterLabels() {
-  if (!cosmosGraph) {
+  if (!cosmosGraph || !communities || !communities.communities) {
     clusterLabelLayer.innerHTML = '';
     cosmosClusterLabels = [];
     return;
@@ -2579,10 +2858,23 @@ function updateClusterLabels() {
     }
   }
 
+  const noiseId = communities.noiseClusterId;
+
   for (let i = 0; i < clusterCount; i++) {
     const label = cosmosClusterLabels[i];
-    const stats = currentClusterStats.get(i) || { size: 0, suspicious: 0 };
-    label.innerHTML = `Cluster ${i + 1}<small>${stats.size} nodes${stats.suspicious ? ` · ${stats.suspicious} flagged` : ''}</small>`;
+    const stats = currentClusterStats.get(i);
+    if (!stats || stats.isNoise || i === noiseId) {
+      label.style.display = 'none';
+      continue;
+    }
+
+    label.style.display = 'block';
+    label.innerHTML = `Cluster ${i}<small>${stats.size} nodes${stats.suspicious ? ` · ${stats.suspicious} flagged` : ''}</small>`;
+
+    const color = communityColors[(i - 1 + communityColors.length) % communityColors.length];
+    label.style.background = `${color}1f`;
+    label.style.border = `1px solid ${color}`;
+    label.style.color = color;
 
     const spaceX = positions[i * 2];
     const spaceY = positions[i * 2 + 1];
@@ -2592,7 +2884,6 @@ function updateClusterLabels() {
     }
 
     const [screenX, screenY] = cosmosGraph.spaceToScreenPosition([spaceX, spaceY]);
-    label.style.display = 'block';
     label.style.left = `${screenX}px`;
     label.style.top = `${screenY}px`;
   }
@@ -2693,14 +2984,7 @@ function highlightNeighbors(node) {
   const index = cosmosNodeIndex.get(node.id);
   if (index === undefined) return;
 
-  const neighborIds = adjacency.get(node.id) || new Set();
-  const neighborIndices = [];
-  neighborIds.forEach(id => {
-    const idx = cosmosNodeIndex.get(id);
-    if (idx !== undefined) neighborIndices.push(idx);
-  });
-
-  cosmosGraph.selectPointsByIndices([index, ...neighborIndices]);
+  cosmosGraph.selectPointByIndex(index, true);
 }
 
 function clearHighlight() {
@@ -3139,7 +3423,9 @@ function showNodeInfo(node) {
   }
   if (communities && communities.communities.has(node.id)) {
     const cid = communities.communities.get(node.id);
-    html += `<div class="info-row"><span class="info-label">Community:</span> <span class="info-value">#${cid + 1}</span></div>`;
+    const isNoise = cid === communities.noiseClusterId;
+    const clusterLabel = isNoise ? 'Noise' : `#${cid}`;
+    html += `<div class="info-row"><span class="info-label">Community:</span> <span class="info-value">${clusterLabel}</span></div>`;
   }
   if (node.verified) html += `<div class="info-row" style="color:#2563eb; font-weight: 600;">✓ Verified</div>`;
   nodeDetails.innerHTML = html;
@@ -3208,7 +3494,12 @@ exportBtn.addEventListener('click', () => {
   const exportData = {
     ...graphData,
     metrics: networkMetrics,
-    communities: communities ? { count: communities.count, assignments: Array.from(communities.communities.entries()) } : null,
+    communities: communities ? {
+      count: communities.count,
+      noiseClusterId: communities.noiseClusterId,
+      minClusterSize: communities.minClusterSize,
+      assignments: Array.from(communities.communities.entries())
+    } : null,
     cibDetection: cibDetection ? {
       suspiciousUsers: Array.from(cibDetection.suspiciousUsers),
       indicators: cibDetection.indicators,
