@@ -42,6 +42,7 @@ let cosmosNodeIndex = new Map();   // node.id -> cosmograph index
 let cosmosHoverIndex = null;
 let cosmosClusterLabels = [];
 let currentClusterStats = new Map();
+let nodeSizeStats = null;
 
 // Expose nodes globally for WebGL renderer access
 window.nodes = nodes;
@@ -158,6 +159,126 @@ const thresholdLabels = {
   1:'Very Low (1)',2:'Low (2)',3:'Low-Med (3)',4:'Medium-Low (4)',5:'Medium (5)',
   6:'Medium-High (6)',7:'High-Med (7)',8:'High (8)',9:'Very High (9)',10:'Maximum (10)'
 };
+
+const NODE_TYPE_COLORS = {
+  user: '#2563eb',
+  hashtag: '#f97316',
+  location: '#8b5cf6',
+  sound: '#6366f1',
+  music: '#6366f1',
+  default: '#6b7280',
+};
+
+const NODE_SIZE_MIN = 6;
+const NODE_SIZE_MAX = 24;
+const NODE_SIZE_UNIFORM = 10;
+
+function getNodeColor(node) {
+  if (!node) return NODE_TYPE_COLORS.default;
+
+  if (node.suspicious) {
+    return '#b91c1c';
+  }
+
+  const communityId = communities?.communities?.get(node.id);
+  if (typeof communityId === 'number') {
+    return communityColors[communityId % communityColors.length] || communityColors[0];
+  }
+
+  const typeColor = NODE_TYPE_COLORS[node.type];
+  return typeColor || NODE_TYPE_COLORS.default;
+}
+
+function nodeSize(node) {
+  if (!node) return NODE_SIZE_UNIFORM;
+
+  const mode = nodeSizeBySelect?.value || 'degree';
+  if (mode === 'uniform') {
+    return NODE_SIZE_UNIFORM;
+  }
+
+  if (!nodeSizeStats || nodeSizeStats.mode !== mode) {
+    nodeSizeStats = computeNodeSizeStatsForMode(mode);
+  }
+
+  const metric = getNodeSizeMetric(node, mode);
+  if (!Number.isFinite(metric)) {
+    return nodeSizeStats?.defaultSize ?? NODE_SIZE_UNIFORM;
+  }
+
+  const { min, max, minSize, maxSize, defaultSize } = nodeSizeStats;
+  if (!Number.isFinite(min) || !Number.isFinite(max) || max <= min) {
+    return defaultSize;
+  }
+
+  const normalized = (metric - min) / (max - min);
+  const clamped = Math.max(0, Math.min(1, normalized));
+  return minSize + clamped * (maxSize - minSize);
+}
+
+function computeNodeSizeStatsForMode(mode) {
+  const sourceNodes = nodes?.length ? nodes : (graphData?.nodes ?? []);
+  const metrics = sourceNodes
+    .map(node => getNodeSizeMetric(node, mode))
+    .filter(value => Number.isFinite(value));
+
+  if (metrics.length === 0) {
+    return {
+      mode,
+      min: 0,
+      max: 0,
+      minSize: NODE_SIZE_UNIFORM,
+      maxSize: NODE_SIZE_UNIFORM,
+      defaultSize: NODE_SIZE_UNIFORM,
+    };
+  }
+
+  const min = Math.min(...metrics);
+  const max = Math.max(...metrics);
+
+  if (max <= min) {
+    const size = Math.max(NODE_SIZE_MIN, Math.min(NODE_SIZE_MAX, NODE_SIZE_UNIFORM));
+    return {
+      mode,
+      min,
+      max,
+      minSize: size,
+      maxSize: size,
+      defaultSize: size,
+    };
+  }
+
+  return {
+    mode,
+    min,
+    max,
+    minSize: NODE_SIZE_MIN,
+    maxSize: NODE_SIZE_MAX,
+    defaultSize: NODE_SIZE_UNIFORM,
+  };
+}
+
+function getNodeSizeMetric(node, mode) {
+  if (!node) return 0;
+
+  switch (mode) {
+    case 'followers': {
+      if (typeof node.followers === 'number') {
+        return Math.log10(Math.max(0, node.followers) + 1);
+      }
+      if (typeof node.count === 'number') {
+        return Math.log10(Math.max(0, node.count) + 1);
+      }
+      if (typeof node.totalEngagement === 'number') {
+        return Math.log10(Math.max(0, node.totalEngagement) + 1);
+      }
+      return Math.log10((node.degree ?? 0) + 1);
+    }
+    case 'degree':
+    default:
+      return Math.log10((node.degree ?? 0) + 1);
+  }
+}
 
 cibThreshold.addEventListener('input', (e)=>{ 
   const val = e.target.value;
@@ -2587,10 +2708,119 @@ function clearHighlight() {
 }
 
 // Helper function to render a single post HTML
+function postEngagement(post) {
+  const stats = post?.data?.stats || post?.stats || {};
+  const instagramStats = post?.data?._instagram?.insights || post?.data?._instagram || {};
+
+  const fields = [
+    'diggCount', 'commentCount', 'shareCount', 'playCount', 'forwardCount', 'collectCount', 'favoriteCount',
+    'likeCount', 'viewCount', 'share_count', 'comment_count', 'like_count', 'play_count', 'favorite_count',
+    'saveCount', 'play', 'likes', 'comments', 'shares', 'views'
+  ];
+
+  let total = 0;
+  fields.forEach(key => { total += Number(stats[key] ?? instagramStats[key] ?? 0) || 0; });
+  return total;
+}
+
+function normalizeUserIdentifier(value) {
+  if (value === undefined || value === null) return null;
+  return String(value).toLowerCase().replace(/^user_/, '').replace(/^u_/, '').replace(/^@/, '');
+}
+
+function postMatchesNode(post, node) {
+  if (!post || !node) return false;
+  const type = node.type || 'user';
+  const nodeId = String(node.id ?? '').toLowerCase();
+  const normalizedNodeId = normalizeUserIdentifier(node.id);
+  const nodeLabel = node.label ? String(node.label).toLowerCase().replace(/^@/, '') : null;
+
+  if (type === 'user') {
+    const author = post?.data?.author || post?.author || {};
+    const authorId = author.id != null ? String(author.id).toLowerCase() : null;
+    const authorHandle = author.uniqueId ? String(author.uniqueId).toLowerCase() : null;
+    const normalizedAuthorId = normalizeUserIdentifier(author.id);
+
+    if (authorId && authorId === nodeId) return true;
+    if (normalizedNodeId && normalizedAuthorId && normalizedNodeId === normalizedAuthorId) return true;
+    if (nodeLabel && authorHandle && nodeLabel === authorHandle) return true;
+
+    const mentions = post?.data?.textExtra?.filter(m => m.type === 0) || [];
+    return mentions.some(m => {
+      const mentionId = m.userId != null ? String(m.userId).toLowerCase() : null;
+      const normalizedMentionId = normalizeUserIdentifier(m.userId || (m.userUniqueId ? `user_${m.userUniqueId}` : null));
+      const mentionHandle = m.userUniqueId ? String(m.userUniqueId).toLowerCase() : null;
+
+      if (mentionId && mentionId === nodeId) return true;
+      if (normalizedNodeId && normalizedMentionId && normalizedNodeId === normalizedMentionId) return true;
+      if (nodeLabel && mentionHandle && nodeLabel === mentionHandle) return true;
+      return false;
+    });
+  }
+
+  if (type === 'hashtag') {
+    const title = nodeLabel;
+    const challenges = post?.data?.challenges || [];
+    return challenges.some(tag => {
+      const tagId = tag?.id != null ? String(tag.id).toLowerCase() : null;
+      const tagTitle = tag?.title ? String(tag.title).toLowerCase() : null;
+      if (tagId && tagId === nodeId) return true;
+      if (title && tagTitle && title === tagTitle) return true;
+      return false;
+    });
+  }
+
+  if (type === 'location') {
+    const location = post?.data?._instagram?.location || post?.data?.location || {};
+    if (!location) return false;
+    const locationId = location.id != null ? String(location.id).toLowerCase() : null;
+    const locationName = location.name ? String(location.name).toLowerCase() : null;
+    if (locationId && locationId === nodeId) return true;
+    if (nodeLabel && locationName && nodeLabel === locationName) return true;
+    return false;
+  }
+
+  if (type === 'sound' || type === 'music') {
+    const music = post?.data?.music || {};
+    const musicId = music?.id != null ? String(music.id).toLowerCase() : null;
+    const musicTitle = music?.title ? String(music.title).toLowerCase() : null;
+    if (musicId && musicId === nodeId) return true;
+    if (nodeLabel && musicTitle && nodeLabel === musicTitle) return true;
+    return false;
+  }
+
+  // Generic fallback: try matching by ID or label string inclusion
+  const combined = JSON.stringify(post).toLowerCase();
+  if (nodeId && combined.includes(nodeId)) return true;
+  if (nodeLabel && combined.includes(nodeLabel)) return true;
+  return false;
+}
+
+function gatherPostsForNode(node) {
+  if (!node) return [];
+  const dataset = Array.isArray(filteredData) && filteredData.length ? filteredData : rawData;
+  if (!Array.isArray(dataset) || dataset.length === 0) return [];
+  return dataset.filter(post => postMatchesNode(post, node));
+}
+
+function samplePostsForNode(node, limit = 6) {
+  const matches = gatherPostsForNode(node);
+  if (matches.length <= limit) return matches;
+  return [...matches]
+    .sort((a, b) => postEngagement(b) - postEngagement(a))
+    .slice(0, limit);
+}
+
+function getAllPostsForNode(node) {
+  const matches = gatherPostsForNode(node);
+  return [...matches].sort((a, b) => postEngagement(b) - postEngagement(a));
+}
+
+// Helper function to render a single post HTML
 function renderPostHTML(p) {
   const a = p?.data?.author || {};
   const platform = p.platform || 'unknown';
-  
+
   // Platform-specific URLs and icons
   let profileUrl, postUrl, platformIcon;
   if (platform === 'instagram') {
