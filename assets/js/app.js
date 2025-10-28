@@ -2211,17 +2211,30 @@ class GPUNetworkRenderer {
 function applyForceLayout() {
   const centerX = canvas.width / 2, centerY = canvas.height / 2;
   const maxRepulsionDist = 300; // Skip repulsion for distant nodes (optimization)
-  
+
   nodes.forEach(node => {
+    const nodeRadius = nodeSize(node);
+
     nodes.forEach(other => {
       if (node === other) return;
       const dx = node.x - other.x, dy = node.y - other.y;
       const distSq = dx*dx + dy*dy;
-      
+
       // Skip repulsion for very distant nodes (optimization)
       if (distSq > maxRepulsionDist * maxRepulsionDist) return;
-      
+
       const dist = Math.sqrt(distSq) || 1;
+      const otherRadius = nodeSize(other);
+      const minDist = nodeRadius + otherRadius + 2; // Minimum distance to prevent overlap
+
+      // Strong collision force if nodes are overlapping or too close
+      if (dist < minDist) {
+        const collisionForce = (minDist - dist) * 0.5;
+        node.vx += (dx / dist) * collisionForce;
+        node.vy += (dy / dist) * collisionForce;
+      }
+
+      // Normal repulsion force
       const force = Math.min(1000 / distSq, 10);
       node.vx += (dx / dist) * force;
       node.vy += (dy / dist) * force;
@@ -2257,6 +2270,9 @@ function initializeVisualization() {
 
   // Reset zoom and pan transform when loading new network
   transform = { x: 0, y: 0, scale: 1 };
+
+  // Clear node size statistics cache
+  nodeSizeStats = null;
 
   canvas.width = canvas.offsetWidth;
   canvas.height = canvas.offsetHeight;
@@ -2318,28 +2334,225 @@ function getNodeColor(node) {
   return '#10b981'; // Green for hashtags
 }
 
+// Cache for node size statistics (recalculated when nodes or sizing mode changes)
+let nodeSizeStats = null;
+
+function calculateNodeSizeStats() {
+  if (!nodes || nodes.length === 0) return null;
+
+  const sizeBy = nodeSizeBySelect?.value || 'degree';
+  const nodeValuePairs = [];
+
+  nodes.forEach(n => {
+    let value;
+    switch (sizeBy) {
+      case 'degree':
+        value = n.degree || 0;
+        break;
+      case 'followers':
+        value = n.type === 'user' ? (n.followers || 0) : (n.count || 0);
+        break;
+      default:
+        return; // uniform doesn't need stats
+    }
+    nodeValuePairs.push({ node: n, value });
+  });
+
+  if (nodeValuePairs.length === 0) return null;
+
+  // Sort by value
+  nodeValuePairs.sort((a, b) => a.value - b.value);
+
+  const values = nodeValuePairs.map(p => p.value);
+  const min = values[0];
+  const max = values[values.length - 1];
+  const range = max - min;
+
+  // Calculate percentiles for better distribution
+  const percentiles = {};
+  [10, 25, 50, 75, 90, 95, 99].forEach(p => {
+    const index = Math.floor((p / 100) * values.length);
+    percentiles[p] = values[Math.min(index, values.length - 1)];
+  });
+
+  // Build a map of node ID to percentile rank (0-1)
+  const percentileMap = new Map();
+  nodeValuePairs.forEach((pair, index) => {
+    const percentile = index / (nodeValuePairs.length - 1 || 1);
+    percentileMap.set(pair.node.id, percentile);
+  });
+
+  // Determine scaling method based on metric type
+  let method;
+  if (sizeBy === 'followers') {
+    // For followers, ALWAYS use logarithmic to properly spread the range
+    // This ensures 100k and 800k have a meaningful size difference
+    method = 'log';
+  } else if (sizeBy === 'degree') {
+    // For degree, check if we need special handling
+    const ratio = max / Math.max(min, 1);
+    if (ratio > 100) {
+      method = 'log'; // Very large range
+    } else if (range < 20) {
+      method = 'linear'; // Small range, linear is fine
+    } else {
+      method = 'sqrt'; // Medium range, square root
+    }
+  } else {
+    method = 'linear';
+  }
+
+  console.log(`📏 Node sizing (${sizeBy}): min=${min}, p50=${percentiles[50]}, p90=${percentiles[90]}, max=${max}, method=${method}`);
+
+  // Debug: Log some example sizes with expected visual sizes
+  if (nodeValuePairs.length > 0) {
+    const samples = [
+      { idx: 0, label: 'smallest' },
+      { idx: Math.floor(nodeValuePairs.length * 0.1), label: '10th percentile' },
+      { idx: Math.floor(nodeValuePairs.length * 0.5), label: 'median' },
+      { idx: Math.floor(nodeValuePairs.length * 0.9), label: '90th percentile' },
+      { idx: nodeValuePairs.length - 1, label: 'largest' }
+    ];
+    console.log(`Sample nodes (using ${method} scaling):`);
+
+    // Calculate expected sizes
+    samples.forEach(s => {
+      const pair = nodeValuePairs[s.idx];
+      const percentile = s.idx / (nodeValuePairs.length - 1 || 1);
+
+      // Calculate what the size will be
+      let normalized;
+      if (method === 'log') {
+        const logMin = Math.log10(min + 1);
+        const logMax = Math.log10(max + 1);
+        const logValue = Math.log10(pair.value + 1);
+        const logRange = logMax - logMin;
+        normalized = logRange > 0 ? (logValue - logMin) / logRange : 0;
+      } else if (method === 'linear') {
+        normalized = range > 0 ? (pair.value - min) / range : 0;
+      } else if (method === 'sqrt') {
+        const sqrtMin = Math.sqrt(min);
+        const sqrtMax = Math.sqrt(max);
+        const sqrtValue = Math.sqrt(pair.value);
+        const sqrtRange = sqrtMax - sqrtMin;
+        normalized = sqrtRange > 0 ? (sqrtValue - sqrtMin) / sqrtRange : 0;
+      }
+
+      const expectedSize = 4 + (normalized * 46); // minSize=4, maxSize=50
+
+      console.log(`  ${s.label}: value=${pair.value.toLocaleString()}, percentile=${percentile.toFixed(3)}, expected size=${expectedSize.toFixed(1)}px`);
+    });
+  }
+
+  return { min, max, range, method, percentiles, percentileMap };
+}
+
 function nodeSize(n) {
   const sizeBy = nodeSizeBySelect.value;
-  
+
+  // Uniform size - simple case
+  if (sizeBy === 'uniform') {
+    return 8;
+  }
+
+  // Get or calculate statistics for current sizing mode
+  if (!nodeSizeStats || nodeSizeStats.mode !== sizeBy) {
+    nodeSizeStats = calculateNodeSizeStats();
+    if (nodeSizeStats) {
+      nodeSizeStats.mode = sizeBy;
+    }
+  }
+
+  // Get the raw value for this node
+  let value;
   switch (sizeBy) {
     case 'degree':
-      const degree = n.degree || 0;
-      return Math.min(5 + Math.sqrt(degree) * 3, 30);
-    
+      value = n.degree || 0;
+      break;
     case 'followers':
-      if (n.type === 'user') {
-        return Math.min(5 + Math.log((n.followers || 0) + 1) * 1.5, 25);
-      } else {
-        // For hashtags and locations, size by count
-        return Math.min(5 + (n.count || 1) * 1.5, 25);
-      }
-    
-    case 'uniform':
-      return 8;
-    
+      value = n.type === 'user' ? (n.followers || 0) : (n.count || 0);
+      break;
     default:
       return 8;
   }
+
+  // If no stats or all values are the same, return default size
+  if (!nodeSizeStats || nodeSizeStats.range === 0) {
+    return 8;
+  }
+
+  const { min, max, range, method, percentileMap } = nodeSizeStats;
+
+  // Define min/max visual sizes with more dramatic range
+  const minSize = 4;
+  const maxSize = 50;
+  const sizeRange = maxSize - minSize;
+
+  // Apply scaling based on the chosen method
+  let normalized;
+
+  switch (method) {
+    case 'percentile':
+      // Percentile-based: uses rank position in sorted list
+      // This ensures even distribution across the full size range
+      normalized = percentileMap.get(n.id) || 0;
+      // Apply power curve to emphasize differences at the top
+      // Using 0.6 makes top nodes much larger relative to bottom nodes
+      normalized = Math.pow(normalized, 0.6);
+      break;
+
+    case 'sqrt':
+      // Square root scaling for medium ranges
+      const sqrtMin = Math.sqrt(min);
+      const sqrtMax = Math.sqrt(max);
+      const sqrtValue = Math.sqrt(value);
+      const sqrtRange = sqrtMax - sqrtMin;
+
+      if (sqrtRange > 0) {
+        normalized = (sqrtValue - sqrtMin) / sqrtRange;
+      } else {
+        normalized = 0;
+      }
+      break;
+
+    case 'log':
+      // Logarithmic scaling - properly spreads exponential distributions
+      const logMin = Math.log10(min + 1);
+      const logMax = Math.log10(max + 1);
+      const logValue = Math.log10(value + 1);
+      const logRange = logMax - logMin;
+
+      if (logRange > 0) {
+        normalized = (logValue - logMin) / logRange;
+      } else {
+        normalized = 0;
+      }
+
+      // Debug: Log specific examples
+      if (sizeBy === 'followers' && (value === 100000 || value === 800000 || Math.random() < 0.001)) {
+        console.log(`LOG sizing: value=${value.toLocaleString()}, logValue=${logValue.toFixed(2)}, normalized=${normalized.toFixed(3)}, size will be ${(minSize + normalized * sizeRange).toFixed(1)}px`);
+      }
+      break;
+
+    case 'linear':
+    default:
+      // Linear scaling
+      normalized = (value - min) / range;
+      break;
+  }
+
+  // Clamp to [0, 1]
+  normalized = Math.max(0, Math.min(1, normalized));
+
+  // Map to size range
+  const size = minSize + (normalized * sizeRange);
+
+  // Debug logging for specific nodes (log only occasionally to avoid spam)
+  if (Math.random() < 0.01 && sizeBy === 'followers') {
+    console.log(`Node size: value=${value}, normalized=${normalized.toFixed(3)}, size=${size.toFixed(1)}px, method=${method}`);
+  }
+
+  return Math.round(size * 10) / 10; // Round to 1 decimal place
 }
 
 function drawNetwork() {
@@ -2724,14 +2937,39 @@ canvas.addEventListener('mousemove', (e) => {
        <div style="opacity:.85">${n.type} · degree ${deg}${meta ? ' · ' + meta : ''}</div>`;
     tooltipEl.style.display = 'block';
 
-    // place tooltip
-    const pad = 12;
-    let tx = e.clientX + 12, ty = e.clientY + 12;
-    const vw = window.innerWidth, vh = window.innerHeight;
-    tooltipEl.style.left = tx + 'px'; tooltipEl.style.top = ty + 'px';
+    // Place tooltip near cursor, adjusting for viewport boundaries
+    const offset = 10; // Small offset from cursor
+    const pad = 8; // Padding from viewport edges
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    // Temporarily position to measure size
+    tooltipEl.style.left = '0px';
+    tooltipEl.style.top = '0px';
     const tb = tooltipEl.getBoundingClientRect();
-    if (tx + tb.width + pad > vw) tooltipEl.style.left = (vw - tb.width - pad) + 'px';
-    if (ty + tb.height + pad > vh) tooltipEl.style.top  = (vh - tb.height - pad) + 'px';
+
+    // Calculate position, prefer right and below cursor
+    let tx = e.clientX + offset;
+    let ty = e.clientY + offset;
+
+    // Check if tooltip would go off right edge
+    if (tx + tb.width + pad > vw) {
+      // Position to the left of cursor instead
+      tx = e.clientX - tb.width - offset;
+      // If still off-screen, clamp to viewport
+      if (tx < pad) tx = pad;
+    }
+
+    // Check if tooltip would go off bottom edge
+    if (ty + tb.height + pad > vh) {
+      // Position above cursor instead
+      ty = e.clientY - tb.height - offset;
+      // If still off-screen, clamp to viewport
+      if (ty < pad) ty = pad;
+    }
+
+    tooltipEl.style.left = tx + 'px';
+    tooltipEl.style.top = ty + 'px';
 
     // redraw with neighbor glow + ring
     drawNetwork();
@@ -3255,6 +3493,8 @@ detectBtn.addEventListener('click', () => {
 // =========================
 networkTypeSelect.addEventListener('change', updateNetwork);
 nodeSizeBySelect.addEventListener('change', () => {
+  // Clear cached stats when sizing mode changes
+  nodeSizeStats = null;
   if (nodes.length > 0) drawNetwork();
 });
 engagementFilter.addEventListener('input', (e) => {
