@@ -13,6 +13,16 @@ import {
   detectAccountCreationClusters,
   detectTemporalBursts,
 } from './analytics.js';
+import {
+  ComputationCache,
+  networkMetricsCache,
+  communityDetectionCache,
+  embeddingsCache,
+  ProgressiveFileLoader,
+  VirtualList,
+  selectTopNodesForVisualization,
+  perfMonitor
+} from './performance-utils.js';
 
 // =========================
 // Global state
@@ -24,6 +34,15 @@ let nodes = [];
 let communities = null;
 let cibDetection = null;
 let animationFrame = null;
+
+// Zoom and pan state
+let transform = {
+  x: 0,      // pan offset X
+  y: 0,      // pan offset Y
+  scale: 1   // zoom level
+};
+let isDragging = false;
+let dragStart = { x: 0, y: 0 };
 let networkMetrics = null;
 
 // Expose nodes globally for WebGL renderer access
@@ -134,7 +153,7 @@ timeWindowInput.addEventListener('input', (e) => {
 });
 
 // =========================
-// File upload
+// File upload (OPTIMIZED: Progressive loading)
 // =========================
 fileInput.addEventListener('change', async (e) => {
   const file = e.target.files[0];
@@ -143,11 +162,24 @@ fileInput.addEventListener('change', async (e) => {
   loading.classList.add('active');
   loadingText.textContent = 'Loading data...';
 
+  perfMonitor.start('fileLoad');
+
   try {
-    const text = await file.text();
-    const lines = text.trim().split('\n');
-    const parsed = lines.map(line => JSON.parse(line));
-    
+    // Use progressive loader for better performance on large files
+    const loader = new ProgressiveFileLoader(
+      (progress, message) => {
+        loadingText.textContent = message;
+      },
+      null // No per-chunk processing needed yet
+    );
+
+    const parsed = await loader.loadNDJSON(file);
+
+    perfMonitor.end('fileLoad');
+    perfMonitor.logMemory();
+
+    loadingText.textContent = 'Normalizing data...';
+
     // Normalize data to handle both TikTok and Instagram
     rawData = normalizeRawData(parsed);
 
@@ -453,27 +485,107 @@ function resetCibParams() {
 }
 
 // =========================
-// CIB detection (heuristics)
+// CIB detection (OPTIMIZED: Spatial indexing for synchronized posts)
 // =========================
+
+// Optimized synchronized posting detection using spatial indexing
+// Reduces O(n²×m) to O(n log n) by bucketing posts by time
+function detectSynchronizedPostingOptimized(postsByUser, timeWindow, minSyncPosts) {
+  const bucketSize = timeWindow;
+  const timeBuckets = new Map();
+
+  // Bucket posts by time windows (with adjacent buckets for boundary cases)
+  postsByUser.forEach((posts, userId) => {
+    posts.forEach(post => {
+      const bucketKey = Math.floor(post.timestamp / bucketSize);
+
+      // Add to current bucket and adjacent buckets to catch boundary cases
+      for (let offset = -1; offset <= 1; offset++) {
+        const key = bucketKey + offset;
+        if (!timeBuckets.has(key)) {
+          timeBuckets.set(key, new Map());
+        }
+        const bucket = timeBuckets.get(key);
+        if (!bucket.has(userId)) {
+          bucket.set(userId, []);
+        }
+        bucket.get(userId).push(post);
+      }
+    });
+  });
+
+  const synchronizedPairs = new Map();
+  const processedPairs = new Set();
+
+  // Only compare users within same time bucket
+  timeBuckets.forEach((userPosts, bucketKey) => {
+    const userIds = Array.from(userPosts.keys());
+
+    for (let i = 0; i < userIds.length; i++) {
+      for (let j = i + 1; j < userIds.length; j++) {
+        const u1 = userIds[i];
+        const u2 = userIds[j];
+
+        const pairKey = u1 < u2 ? `${u1}|${u2}` : `${u2}|${u1}`;
+        if (processedPairs.has(pairKey)) continue;
+        processedPairs.add(pairKey);
+
+        // Count synchronized posts for this pair
+        const posts1 = postsByUser.get(u1);
+        const posts2 = postsByUser.get(u2);
+
+        let syncCount = 0;
+        posts1.forEach(p1 => {
+          posts2.forEach(p2 => {
+            const timeDiff = Math.abs(p1.timestamp - p2.timestamp);
+
+            // DEBUG: Log first match to verify logic
+            if (syncCount === 0 && timeDiff < timeWindow) {
+              console.log(`Sync detected: u1=${u1}, u2=${u2}, timeDiff=${timeDiff}s (${(timeDiff/60).toFixed(1)} min), window=${timeWindow}s`);
+              console.log(`  Post1 time: ${new Date(p1.timestamp * 1000).toISOString()}`);
+              console.log(`  Post2 time: ${new Date(p2.timestamp * 1000).toISOString()}`);
+            }
+
+            if (timeDiff < timeWindow) {
+              syncCount++;
+            }
+          });
+        });
+
+        if (syncCount >= minSyncPosts) {
+          console.log(`✓ Pair flagged as synchronized: ${u1} ↔ ${u2} (${syncCount} synchronized posts, threshold: ${minSyncPosts})`);
+          synchronizedPairs.set(pairKey, { u1, u2, syncCount });
+        }
+      }
+    }
+  });
+
+  return Array.from(synchronizedPairs.values());
+}
+
 async function detectCIB() {
   loading.classList.add('active');
   loadingText.textContent = 'Analyzing coordinated behavior patterns...';
 
+  perfMonitor.start('cibDetection');
+
   setTimeout(async () => {
     const results = { suspiciousUsers: new Set(), indicators: {} };
-    
+
     // Get advanced parameters (uses defaults if settings panel not customized)
     const params = getCibParams();
-    
+
     // Initialize embedding model only if semantic similarity is enabled
     if (params.semanticEnabled) {
       await initEmbeddingModel();
     }
-    
-    // Calculate dataset statistics for adaptive thresholds
-      const stats = calculateDatasetStatistics(filteredData);
 
-    // 1) Synchronized posting
+    // Calculate dataset statistics for adaptive thresholds
+    const stats = calculateDatasetStatistics(filteredData);
+
+    loadingText.textContent = 'Detecting synchronized posting...';
+
+    // 1) Synchronized posting (OPTIMIZED with spatial indexing)
     const postsByUser = new Map();
     filteredData.forEach(post => {
       const userId = post.data?.author?.id;
@@ -483,46 +595,39 @@ async function detectCIB() {
       postsByUser.get(userId).push({ timestamp, post });
     });
     const timeWindow = parseInt(timeWindowInput.value, 10);
-    const synchGroups = [];
-    const userTs = Array.from(postsByUser.entries());
-    for (let i=0;i<userTs.length;i++){
-      for (let j=i+1;j<userTs.length;j++){
-        const [u1, p1] = userTs[i]; const [u2, p2] = userTs[j];
-        let syncCount = 0;
-        p1.forEach(a => p2.forEach(b => { if (Math.abs(a.timestamp - b.timestamp) < timeWindow) syncCount++; }));
-        if (syncCount >= params.minSyncPosts) {
-          results.suspiciousUsers.add(u1); results.suspiciousUsers.add(u2); synchGroups.push({ u1, u2, syncCount });
-        }
-      }
-    }
+
+    // Use optimized detection instead of O(n²)
+    const synchGroups = detectSynchronizedPostingOptimized(postsByUser, timeWindow, params.minSyncPosts);
+    synchGroups.forEach(group => {
+      results.suspiciousUsers.add(group.u1);
+      results.suspiciousUsers.add(group.u2);
+    });
     results.indicators.synchronized = synchGroups.length;
 
+    loadingText.textContent = 'Analyzing hashtag patterns...';
+
     // 2) Rare hashtag sequences with TF-IDF weighting
-    // Build hashtag usage map first
     const userHashtagSets = new Map();
     filteredData.forEach(post => {
       const userId = post.data?.author?.id;
       const hashtags = post.data?.challenges?.map(c => c.title) || [];
       if (!userId || !hashtags.length) return;
-      
+
       if (!userHashtagSets.has(userId)) userHashtagSets.set(userId, []);
       hashtags.forEach(h => userHashtagSets.get(userId).push(h));
     });
 
-    // Detect with TF-IDF weighting to find rare coordinated hashtag combinations
     const hashtagSequences = new Map();
     filteredData.forEach(post => {
       const userId = post.data?.author?.id;
       const hashtags = post.data?.challenges?.map(c => c.title) || [];
       if (!userId || !hashtags.length) return;
-      
-      // Calculate TF-IDF score for this hashtag set
+
       const allSets = Array.from(userHashtagSets.values()).map(arr => new Set(arr));
       const tfidfScore = hashtags.reduce((sum, h) => {
         return sum + calculateTFIDF(h, userHashtagSets.get(userId), allSets);
       }, 0) / hashtags.length;
-      
-      // Only consider high TF-IDF sequences (rare combinations)
+
       if (tfidfScore > params.tfidfThreshold) {
         const key = hashtags.sort().join(',');
         if (!hashtagSequences.has(key)) hashtagSequences.set(key, { users: new Set(), tfidf: tfidfScore });
@@ -530,7 +635,6 @@ async function detectCIB() {
       }
     });
 
-    // Flag groups using rare hashtag combinations
     let identicalHashtagUsers = 0;
     hashtagSequences.forEach((data, key) => {
       if (data.users.size >= params.minHashtagGroupSize) {
@@ -540,6 +644,8 @@ async function detectCIB() {
     });
     results.indicators.identicalHashtags = identicalHashtagUsers;
 
+    loadingText.textContent = 'Comparing usernames...';
+
     // 3) Similar usernames with Levenshtein distance
     const usernames = new Map();
     filteredData.forEach(post => {
@@ -548,7 +654,7 @@ async function detectCIB() {
       const username = author.uniqueId || author.nickname || '';
       const userId = author.id;
       if (username.length < 4) return;
-      
+
       usernames.set(userId, username);
     });
 
@@ -559,12 +665,11 @@ async function detectCIB() {
       for (let j = i + 1; j < usernameArray.length; j++) {
         const [id1, name1] = usernameArray[i];
         const [id2, name2] = usernameArray[j];
-        
+
         const distance = levenshteinDistance(name1, name2);
         const maxLen = Math.max(name1.length, name2.length);
         const similarity = 1 - (distance / maxLen);
-        
-        // Check against threshold (default 80%+ similar)
+
         if (similarity >= params.usernameThreshold) {
           const key = [name1, name2].sort().join('|');
           if (!usernameGroups.has(key)) usernameGroups.set(key, new Set());
@@ -583,77 +688,157 @@ async function detectCIB() {
     });
     results.indicators.similarUsernames = similarUsernameCount;
 
+    loadingText.textContent = 'Detecting high-volume posters...';
+
     // 4) High-volume posting with z-score normalization
     results.indicators.highVolume = 0;
     postsByUser.forEach((posts, userId) => {
       if (posts.length >= params.minHighVolumePosts) {
         const zScore = (posts.length - stats.posts.mean) / stats.posts.stdDev;
-        
-        // Flag if z-score exceeds threshold (default: 2 = 95th percentile)
+
         if (zScore > params.zscoreThreshold) {
           results.suspiciousUsers.add(userId);
           results.indicators.highVolume++;
         }
       }
     });
-    
+
+    loadingText.textContent = 'Analyzing posting bursts...';
+
     // 5) Temporal burst detection
     const bursts = detectTemporalBursts(postsByUser, timeWindow, params.burstPosts);
     results.indicators.temporalBursts = bursts.length;
-    
+
+    loadingText.textContent = 'Checking posting rhythms...';
+
     // 6) Posting rhythm regularity & 24/7 activity
     postsByUser.forEach((posts, userId) => {
-      // Check posting rhythm regularity
       const rhythm = analyzePostingRhythm(posts, params.rhythmCV);
       if (rhythm.regular) {
         results.suspiciousUsers.add(userId);
       }
-      
-      // Check 24/7 posting pattern
+
       const nightPosting = analyzeNightPosting(posts, params.nightGap);
       if (nightPosting.suspicious) {
         results.suspiciousUsers.add(userId);
       }
     });
 
-    // 7) Semantic duplicate captions (AI-powered similarity)
+    loadingText.textContent = 'Analyzing captions...';
+
+    // 7) Semantic duplicate captions (AI-powered similarity with caching)
     let semanticGroups = [];
-    
+
     if (params.semanticEnabled) {
-      // Only run if enabled (can be slow on large datasets)
-      const captionEmbeddings = new Map();
-      
-      for (const post of filteredData) {
-        const userId = post.data?.author?.id;
-        const caption = post.data?.desc || '';
-        if (!userId || caption.length < 20) continue;
-        
-        const embedding = await getEmbedding(caption);
-        captionEmbeddings.set(userId, { caption, embedding, userId });
-      }
-      
-      // Compare all pairs for semantic similarity
-      const embedArray = Array.from(captionEmbeddings.values());
-      for (let i = 0; i < embedArray.length; i++) {
-        for (let j = i + 1; j < embedArray.length; j++) {
-          const similarity = cosineSimilarity(embedArray[i].embedding, embedArray[j].embedding);
-          
-          // Check against threshold (default: 0.85 = very similar, paraphrased content)
-          if (similarity >= params.semanticThreshold) {
-            results.suspiciousUsers.add(embedArray[i].userId);
-            results.suspiciousUsers.add(embedArray[j].userId);
-            semanticGroups.push({ 
-              users: [embedArray[i].userId, embedArray[j].userId],
-              similarity: similarity.toFixed(3),
-              captions: [embedArray[i].caption.slice(0, 50), embedArray[j].caption.slice(0, 50)]
-            });
+      try {
+        loadingText.textContent = 'Loading AI model for semantic analysis...';
+
+        // Collect all unique captions (one per user)
+        const captionsToAnalyze = [];
+        filteredData.forEach(post => {
+          const userId = post.data?.author?.id;
+          const caption = post.data?.desc || '';
+          if (userId && caption.length >= 20) {
+            captionsToAnalyze.push({ userId, caption });
+          }
+        });
+
+        console.log(`Processing ${captionsToAnalyze.length} captions for semantic similarity`);
+
+        // OPTIMIZATION: Use cached embeddings if available
+        let captionEmbeddings = embeddingsCache.get(filteredData, { captions: captionsToAnalyze.length }, () => {
+          console.log('⚠️ Cache miss - computing embeddings...');
+          return null; // Will compute below
+        });
+
+        if (captionEmbeddings) {
+          console.log('✓ Using cached embeddings!');
+          loadingText.textContent = 'Using cached embeddings...';
+        } else {
+          console.log('Computing embeddings for the first time...');
+
+          // Process embeddings in batches to avoid memory overload
+          const BATCH_SIZE = 20; // Process 20 captions at a time
+          const newEmbeddings = new Map();
+
+          for (let batchStart = 0; batchStart < captionsToAnalyze.length; batchStart += BATCH_SIZE) {
+            const batchEnd = Math.min(batchStart + BATCH_SIZE, captionsToAnalyze.length);
+            const batch = captionsToAnalyze.slice(batchStart, batchEnd);
+
+            // Process batch
+            for (const {userId, caption} of batch) {
+              try {
+                const embedding = await getEmbedding(caption);
+                newEmbeddings.set(userId, { caption, embedding, userId });
+              } catch (error) {
+                console.warn(`Failed to generate embedding for user ${userId}:`, error.message);
+              }
+            }
+
+            // Update progress
+            const progress = Math.round((batchEnd / captionsToAnalyze.length) * 100);
+            loadingText.textContent = `Generating embeddings (${batchEnd}/${captionsToAnalyze.length} - ${progress}%)...`;
+
+            // CRITICAL: Yield to browser to prevent freezing
+            await new Promise(resolve => setTimeout(resolve, 10));
+          }
+
+          // Cache the embeddings for next time
+          embeddingsCache.set(
+            embeddingsCache.getKey(filteredData, { captions: captionsToAnalyze.length }),
+            newEmbeddings
+          );
+
+          // Use the newly computed embeddings
+          captionEmbeddings = newEmbeddings;
+        }
+
+        loadingText.textContent = 'Comparing semantic similarity...';
+
+        // Compare all pairs (this is O(n²) but necessary for accuracy)
+        const embedArray = Array.from(captionEmbeddings.values());
+        let comparisons = 0;
+        const totalComparisons = (embedArray.length * (embedArray.length - 1)) / 2;
+
+        for (let i = 0; i < embedArray.length; i++) {
+          for (let j = i + 1; j < embedArray.length; j++) {
+            const similarity = cosineSimilarity(embedArray[i].embedding, embedArray[j].embedding);
+
+            if (similarity >= params.semanticThreshold) {
+              results.suspiciousUsers.add(embedArray[i].userId);
+              results.suspiciousUsers.add(embedArray[j].userId);
+              semanticGroups.push({
+                users: [embedArray[i].userId, embedArray[j].userId],
+                similarity: similarity.toFixed(3),
+                captions: [embedArray[i].caption.slice(0, 50), embedArray[j].caption.slice(0, 50)]
+              });
+            }
+
+            comparisons++;
+          }
+
+          // Update progress and yield every 100 comparisons to keep UI responsive
+          if (i % 100 === 0 && i > 0) {
+            const progress = Math.round((comparisons / totalComparisons) * 100);
+            loadingText.textContent = `Comparing similarity (${progress}%)...`;
+            await new Promise(resolve => setTimeout(resolve, 5));
           }
         }
+
+        console.log(`✓ Semantic analysis complete: ${semanticGroups.length} similar pairs found`);
+
+      } catch (error) {
+        console.error('Semantic analysis failed:', error);
+        loadingText.textContent = 'Semantic analysis failed, continuing with other indicators...';
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        // Continue with other indicators even if semantic fails
       }
     }
-    
+
     results.indicators.semanticDuplicates = semanticGroups.length;
-    
+
+    loadingText.textContent = 'Detecting template captions...';
+
     // 8) N-gram template captions
     const captionPairs = [];
     const captions = new Map();
@@ -662,7 +847,7 @@ async function detectCIB() {
       const userId = post.data?.author?.id;
       const caption = post.data?.desc || '';
       if (!userId || caption.length < 20) return;
-      
+
       captions.set(userId, caption);
     });
 
@@ -670,8 +855,7 @@ async function detectCIB() {
     for (let i = 0; i < captionArray.length; i++) {
       for (let j = i + 1; j < captionArray.length; j++) {
         const overlap = ngramOverlap(captionArray[i][1], captionArray[j][1]);
-        
-        // Check against threshold (default: 0.3 = 30% of 5-grams match, template detected)
+
         if (overlap >= params.ngramThreshold) {
           captionPairs.push({
             users: [captionArray[i][0], captionArray[j][0]],
@@ -685,16 +869,18 @@ async function detectCIB() {
 
     results.indicators.templateCaptions = captionPairs.length;
     results.indicators.duplicateCaptions = semanticGroups.length + captionPairs.length;
-    
+
+    loadingText.textContent = 'Checking account creation patterns...';
+
     // 9) Account creation clustering
-    // Note: Works for Twitter (has account creation dates) and TikTok (if data includes it)
-    // Instagram data typically doesn't include account creation dates, so clustering won't work for IG
     const creationClusters = detectAccountCreationClusters(filteredData, 86400, params.clusterSize);
     results.indicators.accountCreationClusters = creationClusters.length;
-    
+
     if (creationClusters.length > 0) {
       console.log(`Found ${creationClusters.length} account creation clusters`);
     }
+
+    loadingText.textContent = 'Calculating risk scores...';
 
     // Build userId -> username lookup
     const userIdToName = new Map();
@@ -704,14 +890,14 @@ async function detectCIB() {
         userIdToName.set(author.id, author.uniqueId || author.nickname || `user_${author.id}`);
       }
     });
-    
-    // risk scores and reasons
+
+    // Calculate risk scores and reasons
     results.userScores = new Map();
     results.userReasons = new Map();
     results.suspiciousUsers.forEach(userId => {
       let score = 0;
       let reasons = [];
-      
+
       // Check synchronized posting
       const userSyncGroups = synchGroups.filter(g => g.u1===userId || g.u2===userId);
       if (userSyncGroups.length > 0) {
@@ -723,8 +909,8 @@ async function detectCIB() {
         const more = userSyncGroups.length > 5 ? ` and ${userSyncGroups.length - 5} more` : '';
         reasons.push(`Synchronized posting with: ${partners.join(', ')}${more}`);
       }
-      
-      // Check rare hashtag sequences (TF-IDF weighted)
+
+      // Check rare hashtag sequences
       const userPosts = filteredData.filter(p => p.data?.author?.id === userId);
       const hashtagPartners = [];
       hashtagSequences.forEach((data, seq) => {
@@ -739,8 +925,8 @@ async function detectCIB() {
         const more = hashtagPartners.length > 5 ? ` and ${hashtagPartners.length - 5} more` : '';
         reasons.push(`Rare hashtag combinations with: ${display.join(', ')}${more}`);
       }
-      
-      // Check similar username (Levenshtein distance)
+
+      // Check similar usernames
       usernameGroups.forEach((users, key) => {
         if (users.has(userId) && users.size >= params.minUsernameGroupSize) {
           score += 10;
@@ -750,8 +936,8 @@ async function detectCIB() {
           reasons.push(`Similar username pattern with: ${display.join(', ')}${more}`);
         }
       });
-      
-      // Check high-volume posting (z-score)
+
+      // Check high-volume posting
       if (userPosts.length >= params.minHighVolumePosts) {
         const zScore = (userPosts.length - stats.posts.mean) / stats.posts.stdDev;
         if (zScore > params.zscoreThreshold) {
@@ -759,33 +945,33 @@ async function detectCIB() {
           reasons.push(`High-volume posting (z-score: ${zScore.toFixed(1)})`);
         }
       }
-      
+
       // Check temporal bursts
       const userBursts = bursts.filter(b => b.userId === userId);
       if (userBursts.length > 0) {
         score += 15;
         userBursts.forEach(burst => {
-          const timeDesc = timeWindow < 60 ? `${timeWindow} second${timeWindow !== 1 ? 's' : ''}` : 
+          const timeDesc = timeWindow < 60 ? `${timeWindow} second${timeWindow !== 1 ? 's' : ''}` :
                            `${Math.floor(timeWindow/60)} minute${Math.floor(timeWindow/60) !== 1 ? 's' : ''}`;
           reasons.push(`Posting burst: ${burst.count} posts in ${timeDesc}`);
         });
       }
-      
+
       // Check posting rhythm regularity
       const rhythm = analyzePostingRhythm(userPosts.map(p => ({ timestamp: p.data?.createTime })).filter(p => p.timestamp), params.rhythmCV);
       if (rhythm.regular) {
         score += 20;
         reasons.push(`Highly regular posting rhythm (CV: ${(rhythm.cv * 100).toFixed(1)}%)`);
       }
-      
+
       // Check 24/7 posting
       const nightPosting = analyzeNightPosting(userPosts.map(p => ({ timestamp: p.data?.createTime })).filter(p => p.timestamp), params.nightGap);
       if (nightPosting.suspicious) {
         score += 25;
         reasons.push(`24/7 posting pattern (max gap: ${Math.floor(nightPosting.avgMaxGap / 3600)}h)`);
       }
-      
-      // Check semantic duplicate captions
+
+      // Check semantic duplicates
       semanticGroups.forEach(group => {
         if (group.users.includes(userId)) {
           score += 25;
@@ -794,7 +980,7 @@ async function detectCIB() {
           reasons.push(`Semantically similar captions (${group.similarity}) with ${partnerName}`);
         }
       });
-      
+
       // Check n-gram template captions
       captionPairs.forEach(pair => {
         if (pair.users.includes(userId)) {
@@ -804,7 +990,7 @@ async function detectCIB() {
           reasons.push(`Template caption (${(pair.overlap * 100).toFixed(0)}% overlap) with ${partnerName}`);
         }
       });
-      
+
       // Check account creation clusters
       creationClusters.forEach(cluster => {
         if (cluster.has(userId)) {
@@ -812,35 +998,33 @@ async function detectCIB() {
           reasons.push(`Account created with ${cluster.size - 1} others within 24 hours`);
         }
       });
-      
+
       results.userScores.set(userId, score);
       results.userReasons.set(userId, reasons);
     });
-    
-    // Cross-indicator bonus multiplier (multiple indicators = exponentially more suspicious)
+
+    loadingText.textContent = 'Finalizing analysis...';
+
+    // Cross-indicator bonus multiplier
     results.suspiciousUsers.forEach(userId => {
       const reasons = results.userReasons.get(userId) || [];
       const numIndicators = reasons.length;
       let baseScore = results.userScores.get(userId) || 0;
-      
-      // Multiplicative bonus for multiple indicators
+
       if (numIndicators >= 2) {
         const multiplier = 1 + (params.crossMultiplier * numIndicators);
         baseScore = Math.min(100, baseScore * multiplier);
         results.userScores.set(userId, Math.round(baseScore));
       }
-      
-      // Extra bonus for specific dangerous combinations
+
       const reasonText = reasons.join(' ').toLowerCase();
-      
+
       if (reasonText.includes('similar username') && reasonText.includes('created with')) {
-        // Username similarity + account creation = bot farm
         const currentScore = results.userScores.get(userId);
         results.userScores.set(userId, Math.min(100, currentScore + 20));
       }
-      
+
       if (reasonText.includes('synchronized') && reasonText.includes('regular posting')) {
-        // Synchronization + regularity = automated coordination
         const currentScore = results.userScores.get(userId);
         results.userScores.set(userId, Math.min(100, currentScore + 15));
       }
@@ -849,7 +1033,7 @@ async function detectCIB() {
     cibDetection = results;
     displayCIBResults(results);
 
-    // mark nodes
+    // Mark nodes as suspicious
     if (nodes.length > 0) {
       nodes.forEach(node => {
         const plainId = node.id.replace(/^u_/,'');
@@ -861,11 +1045,17 @@ async function detectCIB() {
       });
       drawNetwork();
     }
-      if (statElements.suspicious) statElements.suspicious.textContent = results.suspiciousUsers.size;
+
+    if (statElements.suspicious) {
+      statElements.suspicious.textContent = results.suspiciousUsers.size;
+    }
 
     // Enable CIB export buttons
     exportCsvBtn.disabled = false;
     exportReportBtn.disabled = false;
+
+    perfMonitor.end('cibDetection');
+    perfMonitor.logMemory();
 
     loading.classList.remove('active');
     updateCoach();
@@ -1121,50 +1311,57 @@ function extractLocationNetwork(posts) {
 }
 
 // =========================
-// Metrics & communities
+// Metrics & communities (OPTIMIZED: Cached calculations)
 // =========================
 function calculateNetworkMetrics(graph) {
-  const n = graph.nodes.length;
-  const m = graph.links.length;
-  if (n === 0) return null;
+  // Use cache for expensive metrics calculation
+  return networkMetricsCache.get(graph, {}, () => {
+    perfMonitor.start('networkMetrics');
 
-  const maxEdges = (n * (n - 1)) / 2;
-  const density = maxEdges > 0 ? (m / maxEdges).toFixed(3) : 0;
+    const n = graph.nodes.length;
+    const m = graph.links.length;
+    if (n === 0) return null;
 
-  const degrees = new Map();
-  graph.nodes.forEach(node => degrees.set(node.id, 0));
-  graph.links.forEach(link => {
-    degrees.set(link.source, (degrees.get(link.source) || 0) + 1);
-    degrees.set(link.target, (degrees.get(link.target) || 0) + 1);
-  });
+    const maxEdges = (n * (n - 1)) / 2;
+    const density = maxEdges > 0 ? (m / maxEdges).toFixed(3) : 0;
 
-  const avgDegree = (Array.from(degrees.values()).reduce((a,b)=>a+b,0) / n).toFixed(2);
-  const maxDegree = degrees.size ? Math.max(...Array.from(degrees.values())) : 0;
-
-  graph.nodes.forEach(node => { node.degree = degrees.get(node.id) || 0; });
-
-  let totalClustering = 0, validNodes = 0;
-  graph.nodes.forEach(node => {
-    const neighbors = new Set();
+    const degrees = new Map();
+    graph.nodes.forEach(node => degrees.set(node.id, 0));
     graph.links.forEach(link => {
-      if (link.source === node.id) neighbors.add(link.target);
-      if (link.target === node.id) neighbors.add(link.source);
+      degrees.set(link.source, (degrees.get(link.source) || 0) + 1);
+      degrees.set(link.target, (degrees.get(link.target) || 0) + 1);
     });
-    const k = neighbors.size;
-    if (k < 2) return;
-    let triangles = 0;
-    const arr = Array.from(neighbors);
-    for (let i=0;i<arr.length;i++){
-      for (let j=i+1;j<arr.length;j++){
-        if (graph.links.some(l => (l.source===arr[i] && l.target===arr[j]) || (l.target===arr[i] && l.source===arr[j]))) triangles++;
-      }
-    }
-    const possible = (k*(k-1))/2;
-    if (possible > 0) { totalClustering += triangles/possible; validNodes++; }
-  });
-  const avgClustering = validNodes > 0 ? (totalClustering / validNodes).toFixed(3) : 0;
 
-  return { nodes: n, edges: m, density, avgDegree, maxDegree, avgClustering };
+    const avgDegree = (Array.from(degrees.values()).reduce((a,b)=>a+b,0) / n).toFixed(2);
+    const maxDegree = degrees.size ? Math.max(...Array.from(degrees.values())) : 0;
+
+    graph.nodes.forEach(node => { node.degree = degrees.get(node.id) || 0; });
+
+    let totalClustering = 0, validNodes = 0;
+    graph.nodes.forEach(node => {
+      const neighbors = new Set();
+      graph.links.forEach(link => {
+        if (link.source === node.id) neighbors.add(link.target);
+        if (link.target === node.id) neighbors.add(link.source);
+      });
+      const k = neighbors.size;
+      if (k < 2) return;
+      let triangles = 0;
+      const arr = Array.from(neighbors);
+      for (let i=0;i<arr.length;i++){
+        for (let j=i+1;j<arr.length;j++){
+          if (graph.links.some(l => (l.source===arr[i] && l.target===arr[j]) || (l.target===arr[i] && l.source===arr[j]))) triangles++;
+        }
+      }
+      const possible = (k*(k-1))/2;
+      if (possible > 0) { totalClustering += triangles/possible; validNodes++; }
+    });
+    const avgClustering = validNodes > 0 ? (totalClustering / validNodes).toFixed(3) : 0;
+
+    perfMonitor.end('networkMetrics');
+
+    return { nodes: n, edges: m, density, avgDegree, maxDegree, avgClustering };
+  });
 }
 
 function displayMetrics(metrics) {
@@ -1183,40 +1380,55 @@ function displayMetrics(metrics) {
 function detectCommunities(graph) {
   if (graph.nodes.length === 0 || graph.links.length === 0) return null;
 
-  const adj = new Map();
-  graph.nodes.forEach(n => adj.set(n.id, new Set()));
-  graph.links.forEach(l => { adj.get(l.source).add(l.target); adj.get(l.target).add(l.source); });
+  // Use cache for community detection (expensive operation)
+  return communityDetectionCache.get(graph, {}, () => {
+    perfMonitor.start('communityDetection');
 
-  const labels = new Map();
-  graph.nodes.forEach((n,i)=>labels.set(n.id, i));
+    const adj = new Map();
+    graph.nodes.forEach(n => adj.set(n.id, new Set()));
+    graph.links.forEach(l => { adj.get(l.source).add(l.target); adj.get(l.target).add(l.source); });
 
-  let changed = true, iterations = 0;
-  const maxIterations = 100;
+    const labels = new Map();
+    graph.nodes.forEach((n,i)=>labels.set(n.id, i));
 
-  while (changed && iterations < maxIterations) {
-    changed = false; iterations++;
-    const shuffled = [...graph.nodes].sort(() => Math.random()-0.5);
-    shuffled.forEach(node => {
-      const neighbors = adj.get(node.id); if (neighbors.size===0) return;
-      const counts = new Map();
-      neighbors.forEach(nb => { const lab = labels.get(nb); counts.set(lab, (counts.get(lab)||0)+1); });
-      let best = labels.get(node.id), bestCount = 0;
-      counts.forEach((c,lab)=>{ if (c>bestCount){ bestCount=c; best=lab; } });
-      if (best !== labels.get(node.id)) { labels.set(node.id, best); changed = true; }
-    });
-  }
-  const uniq = [...new Set(labels.values())];
-  const remap = new Map(); uniq.forEach((lab,i)=>remap.set(lab,i));
-  const out = new Map(); labels.forEach((lab,id)=>out.set(id, remap.get(lab)));
-  return { communities: out, count: uniq.length };
+    let changed = true, iterations = 0;
+    const maxIterations = 100;
+
+    while (changed && iterations < maxIterations) {
+      changed = false; iterations++;
+      const shuffled = [...graph.nodes].sort(() => Math.random()-0.5);
+      shuffled.forEach(node => {
+        const neighbors = adj.get(node.id); if (neighbors.size===0) return;
+        const counts = new Map();
+        neighbors.forEach(nb => { const lab = labels.get(nb); counts.set(lab, (counts.get(lab)||0)+1); });
+        let best = labels.get(node.id), bestCount = 0;
+        counts.forEach((c,lab)=>{ if (c>bestCount){ bestCount=c; best=lab; } });
+        if (best !== labels.get(node.id)) { labels.set(node.id, best); changed = true; }
+      });
+    }
+    const uniq = [...new Set(labels.values())];
+    const remap = new Map(); uniq.forEach((lab,i)=>remap.set(lab,i));
+    const out = new Map(); labels.forEach((lab,id)=>out.set(id, remap.get(lab)));
+
+    perfMonitor.end('communityDetection');
+
+    return { communities: out, count: uniq.length };
+  });
 }
 
 // =========================
-// Update network
+// Update network (OPTIMIZED: Progressive visualization + cache invalidation)
 // =========================
 function updateNetwork() {
   loading.classList.add('active');
   loadingText.textContent = 'Building network...';
+
+  // Clear caches when filters change (data has changed)
+  networkMetricsCache.clear();
+  communityDetectionCache.clear();
+  embeddingsCache.clear(); // Also clear embeddings cache
+
+  perfMonitor.start('updateNetwork');
 
     setTimeout(() => {
       const minEngagement = parseInt(engagementFilter.value, 10);
@@ -1246,15 +1458,38 @@ function updateNetwork() {
       default:            network = { nodes: [], links: [] };
     }
 
-      graphData = network;
+      // Store full network for analysis
+      const fullNetwork = network;
+
+      // OPTIMIZATION: Use progressive visualization for large networks
+      // Analysis uses ALL nodes, but rendering limits to top nodes by degree
+      const MAX_RENDERED_NODES = 2000;
+      let isLimitedVisualization = false;
+
+      if (network.nodes.length > MAX_RENDERED_NODES) {
+        console.log(`⚠️ Large network detected (${network.nodes.length} nodes). Limiting visualization to top ${MAX_RENDERED_NODES} nodes by degree.`);
+        const visualizationNetwork = selectTopNodesForVisualization(network, MAX_RENDERED_NODES);
+
+        // Use visualization network for rendering
+        graphData = visualizationNetwork;
+        isLimitedVisualization = true;
+
+        loadingText.textContent = `Large network: showing ${MAX_RENDERED_NODES} of ${network.nodes.length} nodes`;
+        setTimeout(() => { loadingText.textContent = ''; }, 5000);
+      } else {
+        graphData = network;
+      }
+
       communities = null;
       cibDetection = null;
 
-      networkMetrics = calculateNetworkMetrics(network);
+      // Calculate metrics on FULL network (not limited visualization)
+      networkMetrics = calculateNetworkMetrics(fullNetwork);
       displayMetrics(networkMetrics);
 
-      if (statElements.nodes) statElements.nodes.textContent = network.nodes.length;
-      if (statElements.edges) statElements.edges.textContent = network.links.length;
+      // Show full network stats, not just visualized nodes
+      if (statElements.nodes) statElements.nodes.textContent = fullNetwork.nodes.length + (isLimitedVisualization ? ` (showing ${graphData.nodes.length})` : '');
+      if (statElements.edges) statElements.edges.textContent = fullNetwork.links.length;
       if (statElements.density) statElements.density.textContent = networkMetrics ? networkMetrics.density : '0';
       if (statElements.communities) statElements.communities.textContent = '0';
       if (statElements.suspicious) statElements.suspicious.textContent = '0';
@@ -1262,21 +1497,25 @@ function updateNetwork() {
     cibPanel.style.display = 'none';
 
     // Check if network is empty
-    if (network.nodes.length === 0 || network.links.length === 0) {
+    if (fullNetwork.nodes.length === 0 || fullNetwork.links.length === 0) {
       loading.classList.remove('active');
-      loadingText.textContent = `No ${networkType === 'mention' ? 'mentions' : 
-                                  networkType === 'coHashtag' ? 'co-hashtags' : 
-                                  networkType === 'hashtag' ? 'hashtags' : 
-                                  networkType === 'userHashtag' ? 'user-hashtag connections' : 
-                                  networkType === 'photoTag' ? 'photo tags' : 
+      loadingText.textContent = `No ${networkType === 'mention' ? 'mentions' :
+                                  networkType === 'coHashtag' ? 'co-hashtags' :
+                                  networkType === 'hashtag' ? 'hashtags' :
+                                  networkType === 'userHashtag' ? 'user-hashtag connections' :
+                                  networkType === 'photoTag' ? 'photo tags' :
                                   'location connections'} found in this dataset. Try a different network type.`;
       setTimeout(() => { loadingText.textContent = ''; }, 5000);
+      perfMonitor.end('updateNetwork');
       return;
     }
 
-    // Build adjacency (for degree/hover-neighbor glow) and an id->node map
+    // Build adjacency using rendered network (graphData)
     buildAdjacency(graphData);
     idToNode = new Map(graphData.nodes.map(n => [n.id, n]));
+
+    perfMonitor.end('updateNetwork');
+    perfMonitor.logMemory();
 
     initializeVisualization();
     loading.classList.remove('active');
@@ -1657,41 +1896,47 @@ class GPUNetworkRenderer {
     ] : [0.5, 0.5, 0.5];
   }
 
-  render(nodes, edges, width, height) {
+  render(nodes, edges, width, height, transform = { x: 0, y: 0, scale: 1 }) {
     if (!this.initialized) return false;
-    
+
     const gl = this.gl;
     gl.viewport(0, 0, width, height);
     gl.clearColor(1, 1, 1, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    
-    this.renderEdges(edges, width, height);
-    this.renderNodes(nodes, width, height);
-    
+
+    this.renderEdges(edges, width, height, transform);
+    this.renderNodes(nodes, width, height, transform);
+
     return true;
   }
 
-  renderEdges(edges, width, height) {
+  renderEdges(edges, width, height, transform = { x: 0, y: 0, scale: 1 }) {
     if (edges.length === 0) return;
-    
+
     const gl = this.gl;
     gl.useProgram(this.edgeProgram);
-    
+
     // Prepare edge data
     const positions = [];
     const colors = [];
     const alphas = [];
-    
+
     edges.forEach(edge => {
       if (!edge.source || !edge.target) return;
-      
+
       // Use idToNode map for better performance (optimization)
       const source = idToNode.get(edge.source);
       const target = idToNode.get(edge.target);
       if (!source || !target) return;
-      
+
+      // Apply transform to positions
+      const sx = source.x * transform.scale + transform.x;
+      const sy = source.y * transform.scale + transform.y;
+      const tx = target.x * transform.scale + transform.x;
+      const ty = target.y * transform.scale + transform.y;
+
       // Create line segment
-      positions.push(source.x, source.y, target.x, target.y);
+      positions.push(sx, sy, tx, ty);
       
       const weight = edge.weight || 1;
       const alpha = Math.min(0.3 + weight * 0.1, 0.8);
@@ -1738,34 +1983,39 @@ class GPUNetworkRenderer {
     gl.drawArrays(gl.LINES, 0, positions.length / 2);
   }
 
-  renderNodes(nodes, width, height) {
+  renderNodes(nodes, width, height, transform = { x: 0, y: 0, scale: 1 }) {
     if (nodes.length === 0) return;
-    
+
     const gl = this.gl;
     gl.useProgram(this.nodeProgram);
-    
+
     // Prepare node data
     const positions = [];
     const colors = [];
     const radii = [];
     const borderWidths = [];
     const borderColors = [];
-    
+
     nodes.forEach(node => {
-      positions.push(node.x, node.y);
+      // Apply transform to positions
+      const x = node.x * transform.scale + transform.x;
+      const y = node.y * transform.scale + transform.y;
+      positions.push(x, y);
       
       const color = this.hexToRgb(getNodeColor(node));
       colors.push(...color);
-      
-      const radius = nodeSize(node);
+
+      // Scale the radius by the transform scale
+      const radius = nodeSize(node) * transform.scale;
       radii.push(radius);
       
-      // Border styling
+      // Border styling (scale border widths too)
+      const unscaledRadius = nodeSize(node);
       if (node.suspicious) {
-        borderWidths.push(3);
+        borderWidths.push(3 * transform.scale);
         borderColors.push(...this.hexToRgb('#7f1d1d'));
-      } else if (radius > 12) {
-        borderWidths.push(2);
+      } else if (unscaledRadius > 12) {
+        borderWidths.push(2 * transform.scale);
         borderColors.push(...this.hexToRgb('#ffffff'));
       } else {
         borderWidths.push(0);
@@ -1840,7 +2090,7 @@ class GPUNetworkRenderer {
     gl.vertexAttribPointer(location, size, gl.FLOAT, false, 0, 0);
   }
 
-  renderLabels(nodes, width, height) {
+  renderLabels(nodes, width, height, transform = { x: 0, y: 0, scale: 1 }) {
     // CRITICAL FIX: Cannot create 2D context on canvas with WebGL context
     // Instead, create a temporary overlay canvas for text rendering
     const overlayCanvas = document.createElement('canvas');
@@ -1851,16 +2101,19 @@ class GPUNetworkRenderer {
     overlayCanvas.style.left = '0';
     overlayCanvas.style.pointerEvents = 'none';
     overlayCanvas.style.zIndex = '1';
-    
+
     const ctx = overlayCanvas.getContext('2d');
     if (!ctx) return;
-    
+
     ctx.save();
+    // Apply zoom and pan transform
+    ctx.translate(transform.x, transform.y);
+    ctx.scale(transform.scale, transform.scale);
     ctx.font = '12px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
     ctx.fillStyle = '#1f2937';
-    
+
     nodes.forEach(node => {
       const radius = nodeSize(node);
       if (radius > 8) {
@@ -1868,7 +2121,7 @@ class GPUNetworkRenderer {
         ctx.fillText(label, node.x, node.y - radius - 5);
       }
     });
-    
+
     ctx.restore();
     
     // Replace any existing overlay
@@ -1882,7 +2135,7 @@ class GPUNetworkRenderer {
     this.canvas.parentNode.appendChild(overlayCanvas);
   }
 
-  renderArrows(edges, width, height) {
+  renderArrows(edges, width, height, transform = { x: 0, y: 0, scale: 1 }) {
     // Render arrows on overlay for GPU mode (WebGL arrows are complex)
     const overlayCanvas = document.createElement('canvas');
     overlayCanvas.width = width;
@@ -1892,16 +2145,19 @@ class GPUNetworkRenderer {
     overlayCanvas.style.left = '0';
     overlayCanvas.style.pointerEvents = 'none';
     overlayCanvas.style.zIndex = '0.5';
-    
+
     const ctx = overlayCanvas.getContext('2d');
     if (!ctx) return;
-    
+
     ctx.save();
+    // Apply zoom and pan transform
+    ctx.translate(transform.x, transform.y);
+    ctx.scale(transform.scale, transform.scale);
     edges.forEach(edge => {
       const s = idToNode.get(edge.source);
       const t = idToNode.get(edge.target);
       if (!s || !t) return;
-      
+
       const angle = Math.atan2(t.y - s.y, t.x - s.x);
       const targetRadius = nodeSize(t);
       const arrowSize = Math.min(8, targetRadius * 0.6);
@@ -1998,6 +2254,10 @@ function initializeVisualization() {
     if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
     return;
   }
+
+  // Reset zoom and pan transform when loading new network
+  transform = { x: 0, y: 0, scale: 1 };
+
   canvas.width = canvas.offsetWidth;
   canvas.height = canvas.offsetHeight;
 
@@ -2088,11 +2348,11 @@ function drawNetwork() {
   
   // Try GPU rendering first, fallback to CPU if needed
   if (gpuRenderer && gpuRenderer.initialized) {
-    const success = gpuRenderer.render(nodes, graphData.links, canvas.width, canvas.height);
+    const success = gpuRenderer.render(nodes, graphData.links, canvas.width, canvas.height, transform);
     if (success) {
       // Render arrows and labels using Canvas 2D overlays
-      gpuRenderer.renderArrows(graphData.links, canvas.width, canvas.height);
-      gpuRenderer.renderLabels(nodes, canvas.width, canvas.height);
+      gpuRenderer.renderArrows(graphData.links, canvas.width, canvas.height, transform);
+      gpuRenderer.renderLabels(nodes, canvas.width, canvas.height, transform);
       updateRenderingIndicator(true);
       return;
     }
@@ -2132,8 +2392,13 @@ function drawNetworkCPU() {
       return;
     }
   }
-  
+
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Apply zoom and pan transform
+  ctx.save();
+  ctx.translate(transform.x, transform.y);
+  ctx.scale(transform.scale, transform.scale);
 
   // edges (use idToNode map instead of find for better performance)
   graphData.links.forEach(link => {
@@ -2189,6 +2454,9 @@ function drawNetworkCPU() {
       ctx.fillText(label, n.x, n.y - r - 5);
     }
   });
+
+  // Restore transform
+  ctx.restore();
 }
 
 // =========================
@@ -2277,15 +2545,22 @@ function highlightNeighbors(node) {
     renderHighlightGlow(highlightNodes, node, nbs);
   } else {
     // Fallback to CPU rendering - highlight neighbor nodes
-  ctx.save(); ctx.globalAlpha = 0.15; ctx.fillStyle = '#fde68a';
+  ctx.save();
+  // Apply zoom and pan transform
+  ctx.translate(transform.x, transform.y);
+  ctx.scale(transform.scale, transform.scale);
+  ctx.globalAlpha = 0.15; ctx.fillStyle = '#fde68a';
   for (const id of nbs) {
     const nb = idToNode.get(id); if (!nb) continue;
     ctx.beginPath(); ctx.arc(nb.x, nb.y, nodeSize(nb)+8, 0, Math.PI*2); ctx.fill();
   }
   ctx.restore();
-    
+
     // Highlight connected edges
     ctx.save();
+  // Apply zoom and pan transform
+  ctx.translate(transform.x, transform.y);
+  ctx.scale(transform.scale, transform.scale);
     graphData.links.forEach(link => {
       const isConnected = (link.source === node.id && nbs.has(link.target)) ||
                          (link.target === node.id && nbs.has(link.source));
@@ -2347,6 +2622,9 @@ function renderHighlightGlow(highlightNodes, node, nbs) {
   // Draw highlighted edges first (so they appear behind nodes)
   if (node && nbs) {
     tempCtx.save();
+    // Apply zoom and pan transform
+    tempCtx.translate(transform.x, transform.y);
+    tempCtx.scale(transform.scale, transform.scale);
     graphData.links.forEach(link => {
       const isConnected = (link.source === node.id && nbs.has(link.target)) ||
                          (link.target === node.id && nbs.has(link.source));
@@ -2392,6 +2670,9 @@ function renderHighlightGlow(highlightNodes, node, nbs) {
   
   // Draw highlighted nodes
   tempCtx.save();
+  // Apply zoom and pan transform
+  tempCtx.translate(transform.x, transform.y);
+  tempCtx.scale(transform.scale, transform.scale);
   highlightNodes.forEach(node => {
     tempCtx.globalAlpha = node.alpha;
     tempCtx.fillStyle = `rgb(${Math.floor(node.color[0]*255)}, ${Math.floor(node.color[1]*255)}, ${Math.floor(node.color[2]*255)})`;
@@ -2413,11 +2694,15 @@ function renderHighlightGlow(highlightNodes, node, nbs) {
 }
 
 canvas.addEventListener('mousemove', (e) => {
-  if (!nodes?.length) return;
-  const rect = canvas.getBoundingClientRect();
-  const x = e.clientX - rect.left, y = e.clientY - rect.top;
+  if (!nodes?.length || isDragging) return;
 
-  const n = getNodeAt(x, y);
+  const rect = canvas.getBoundingClientRect();
+  const screenX = e.clientX - rect.left;
+  const screenY = e.clientY - rect.top;
+
+  // Transform screen coordinates to canvas coordinates
+  const canvasPos = screenToCanvas(screenX, screenY);
+  const n = getNodeAt(canvasPos.x, canvasPos.y);
   if (n) {
     hoveredNode = n;
     canvas.classList.add('hovering');
@@ -2461,15 +2746,18 @@ canvas.addEventListener('mousemove', (e) => {
     hoverCanvas.style.left = '0';
     hoverCanvas.style.pointerEvents = 'none';
     hoverCanvas.style.zIndex = '4';
-    
+
     const hoverCtx = hoverCanvas.getContext('2d');
-    hoverCtx.save(); 
-    hoverCtx.strokeStyle = '#111827'; 
-    hoverCtx.lineWidth = 2; 
+    hoverCtx.save();
+    // Apply zoom and pan transform
+    hoverCtx.translate(transform.x, transform.y);
+    hoverCtx.scale(transform.scale, transform.scale);
+    hoverCtx.strokeStyle = '#111827';
+    hoverCtx.lineWidth = 2;
     hoverCtx.globalAlpha = 0.6;
-    hoverCtx.beginPath(); 
-    hoverCtx.arc(n.x, n.y, nodeSize(n)+4, 0, Math.PI*2); 
-    hoverCtx.stroke(); 
+    hoverCtx.beginPath();
+    hoverCtx.arc(n.x, n.y, nodeSize(n)+4, 0, Math.PI*2);
+    hoverCtx.stroke();
     hoverCtx.restore();
     
     // Remove any existing hover overlay
@@ -2490,8 +2778,16 @@ canvas.addEventListener('mousemove', (e) => {
 });
 
 canvas.addEventListener('click', (e) => {
+  // Don't trigger click if we were dragging
+  if (isDragging) return;
+
   const rect = canvas.getBoundingClientRect();
-  const x = e.clientX - rect.left, y = e.clientY - rect.top;
+  const screenX = e.clientX - rect.left;
+  const screenY = e.clientY - rect.top;
+
+  // Transform screen coordinates to canvas coordinates
+  const x = (screenX - transform.x) / transform.scale;
+  const y = (screenY - transform.y) / transform.scale;
 
   let clicked = null, minDist = Infinity;
   nodes.forEach(n => {
@@ -2503,6 +2799,83 @@ canvas.addEventListener('click', (e) => {
   if (clicked) {
     showNodeInfo(clicked);   // keep sidebar
     openNodeModal(clicked);  // new rich modal
+  }
+});
+
+// =========================
+// Zoom and Pan Controls
+// =========================
+
+// Helper function to transform screen coordinates to canvas coordinates
+function screenToCanvas(screenX, screenY) {
+  return {
+    x: (screenX - transform.x) / transform.scale,
+    y: (screenY - transform.y) / transform.scale
+  };
+}
+
+// Zoom with mouse wheel
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+
+  const rect = canvas.getBoundingClientRect();
+  const mouseX = e.clientX - rect.left;
+  const mouseY = e.clientY - rect.top;
+
+  // Calculate zoom factor
+  const zoomFactor = e.deltaY < 0 ? 1.1 : 0.9;
+  const newScale = Math.max(0.1, Math.min(10, transform.scale * zoomFactor));
+
+  // Zoom towards mouse position
+  const canvasX = (mouseX - transform.x) / transform.scale;
+  const canvasY = (mouseY - transform.y) / transform.scale;
+
+  transform.scale = newScale;
+  transform.x = mouseX - canvasX * newScale;
+  transform.y = mouseY - canvasY * newScale;
+
+  drawNetwork();
+});
+
+// Pan with mouse drag
+canvas.addEventListener('mousedown', (e) => {
+  // Only start drag with left mouse button and not on a node
+  if (e.button !== 0) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const screenX = e.clientX - rect.left;
+  const screenY = e.clientY - rect.top;
+  const canvasPos = screenToCanvas(screenX, screenY);
+
+  // Check if clicking on a node - if so, don't start panning
+  const nodeAtPos = getNodeAt(canvasPos.x, canvasPos.y);
+  if (nodeAtPos) return;
+
+  isDragging = true;
+  dragStart = { x: e.clientX - transform.x, y: e.clientY - transform.y };
+  canvas.style.cursor = 'grabbing';
+});
+
+canvas.addEventListener('mousemove', (e) => {
+  if (!isDragging) return;
+
+  transform.x = e.clientX - dragStart.x;
+  transform.y = e.clientY - dragStart.y;
+
+  drawNetwork();
+});
+
+canvas.addEventListener('mouseup', () => {
+  if (isDragging) {
+    isDragging = false;
+    canvas.style.cursor = 'default';
+  }
+});
+
+canvas.addEventListener('mouseleave', () => {
+  if (isDragging) {
+    isDragging = false;
+    canvas.style.cursor = 'default';
   }
 });
 
@@ -3333,45 +3706,93 @@ exportReportBtn.addEventListener('click', () => {
   URL.revokeObjectURL(url);
 });
 
-searchInput.addEventListener('input', (e) => {
-  const term = e.target.value.toLowerCase();
-  if (!term || !nodes.length) { drawNetwork(); return; }
-  drawNetwork();
-  const matches = nodes.filter(n => (n.label || '').toLowerCase().includes(term));
-  
-  // Draw search highlights using overlay canvas to avoid context conflicts
-  const highlightCanvas = document.createElement('canvas');
-  highlightCanvas.width = canvas.width;
-  highlightCanvas.height = canvas.height;
-  highlightCanvas.style.position = 'absolute';
-  highlightCanvas.style.top = '0';
-  highlightCanvas.style.left = '0';
-  highlightCanvas.style.pointerEvents = 'none';
-  highlightCanvas.style.zIndex = '3';
-  
-  const highlightCtx = highlightCanvas.getContext('2d');
-  highlightCtx.strokeStyle = '#ef4444'; 
-  highlightCtx.lineWidth = 3;
-  matches.forEach(n => { 
-    const r = nodeSize(n); 
-    highlightCtx.beginPath(); 
-    highlightCtx.arc(n.x, n.y, r+3, 0, Math.PI*2); 
-    highlightCtx.stroke(); 
-  });
-  
-  // Remove any existing search highlight overlay
-  const existingSearchHighlight = canvas.parentNode.querySelector('.search-highlight-overlay');
-  if (existingSearchHighlight) {
-    existingSearchHighlight.remove();
-  }
-  
-  // Add the search highlight overlay
-  highlightCanvas.className = 'search-highlight-overlay';
-  canvas.parentNode.appendChild(highlightCanvas);
-});
+if (searchInput) {
+  searchInput.addEventListener('input', (e) => {
+    const term = e.target.value.toLowerCase();
+    if (!term || !nodes.length) {
+      // Clear any existing highlights
+      const existingSearchHighlight = canvas?.parentNode?.querySelector('.search-highlight-overlay');
+      if (existingSearchHighlight) {
+        existingSearchHighlight.remove();
+      }
+      drawNetwork();
+      return;
+    }
 
+    drawNetwork();
+    const matches = nodes.filter(n => (n.label || '').toLowerCase().includes(term));
+
+    console.log(`Search: Found ${matches.length} nodes matching "${term}"`);
+
+    // Draw search highlights using overlay canvas to avoid context conflicts
+    const highlightCanvas = document.createElement('canvas');
+    highlightCanvas.width = canvas.width;
+    highlightCanvas.height = canvas.height;
+    highlightCanvas.style.position = 'absolute';
+    highlightCanvas.style.top = '0';
+    highlightCanvas.style.left = '0';
+    highlightCanvas.style.pointerEvents = 'none';
+    highlightCanvas.style.zIndex = '3';
+
+    const highlightCtx = highlightCanvas.getContext('2d');
+    highlightCtx.save();
+    // Apply zoom and pan transform
+    highlightCtx.translate(transform.x, transform.y);
+    highlightCtx.scale(transform.scale, transform.scale);
+    highlightCtx.strokeStyle = '#ef4444';
+    highlightCtx.lineWidth = 3;
+    matches.forEach(n => {
+      const r = nodeSize(n);
+      highlightCtx.beginPath();
+      highlightCtx.arc(n.x, n.y, r+3, 0, Math.PI*2);
+      highlightCtx.stroke();
+    });
+    highlightCtx.restore();
+
+    // Remove any existing search highlight overlay
+    const existingSearchHighlight = canvas.parentNode.querySelector('.search-highlight-overlay');
+    if (existingSearchHighlight) {
+      existingSearchHighlight.remove();
+    }
+
+    // Add the search highlight overlay
+    highlightCanvas.className = 'search-highlight-overlay';
+    canvas.parentNode.appendChild(highlightCanvas);
+  });
+} else {
+  console.error('Search input element not found! Check if #search-input exists in HTML.');
+}
+
+// OPTIMIZED: Only resize canvas, don't reinitialize everything
+function resizeCanvas() {
+  if (!canvas || !nodes || nodes.length === 0) return;
+
+  const oldWidth = canvas.width;
+  const oldHeight = canvas.height;
+
+  canvas.width = canvas.offsetWidth;
+  canvas.height = canvas.offsetHeight;
+
+  // Scale existing node positions proportionally instead of reinitializing
+  if (oldWidth > 0 && oldHeight > 0) {
+    const scaleX = canvas.width / oldWidth;
+    const scaleY = canvas.height / oldHeight;
+
+    nodes.forEach(node => {
+      node.x *= scaleX;
+      node.y *= scaleY;
+    });
+  }
+
+  // Just redraw with existing positions
+  drawNetwork();
+}
+
+let resizeTimeout;
 window.addEventListener('resize', () => {
-  if (graphData && graphData.nodes.length > 0) initializeVisualization();
+  // Debounce resize to avoid excessive redraws
+  clearTimeout(resizeTimeout);
+  resizeTimeout = setTimeout(resizeCanvas, 100);
 });
 
 // =========================
